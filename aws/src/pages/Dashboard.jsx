@@ -730,7 +730,10 @@ function Dashboard() {
                     Module Health Matrix
                   </h3>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left" style={{ minWidth: 600 }}>
+                    <table
+                      className="w-full text-left"
+                      style={{ minWidth: 600 }}
+                    >
                       <thead>
                         <tr className="border-b border-slate-200">
                           {[
