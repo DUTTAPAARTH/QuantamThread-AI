@@ -3,7 +3,7 @@
  * Connects to the Express backend at localhost:3001
  */
 
-const API_BASE = "";
+const API_BASE = "http://localhost:3001";
 
 async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
