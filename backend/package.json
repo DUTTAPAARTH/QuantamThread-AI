@@ -1,0 +1,31 @@
+{
+  "name": "quantumthread-backend",
+  "version": "1.0.0",
+  "description": "QuantumThread AI – Multi-agent AI orchestration backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "orchestrator"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@aws-sdk/client-bedrock": "^3.1004.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1004.0",
+    "@aws-sdk/client-s3": "^3.1004.0",
+    "adm-zip": "^0.5.16",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "node-fetch": "^2.7.0",
+    "sqlite3": "^5.0.2"
+  }
+}
