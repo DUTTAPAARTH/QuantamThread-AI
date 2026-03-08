@@ -1,4 +1,5 @@
 require("dotenv").config();
+const serverless = require("serverless-http");
 const express = require("express");
 const cors = require("cors");
 const { initializeDatabase, dbGet } = require("./db");
@@ -48,8 +49,8 @@ app.use("/code", codeRouter);
 app.use((req, res, next) => {
   // If it looks like an API call, return 404 JSON
   if (req.path.startsWith('/intelligence') || req.path.startsWith('/projects') ||
-      req.path.startsWith('/chat') || req.path.startsWith('/impact') ||
-      req.path.startsWith('/health') || req.path.startsWith('/code')) {
+    req.path.startsWith('/chat') || req.path.startsWith('/impact') ||
+    req.path.startsWith('/health') || req.path.startsWith('/code')) {
     return res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
   }
   // Otherwise serve the frontend
@@ -63,16 +64,13 @@ app.use((err, req, res, _next) => {
 });
 
 // ── Start server after DB is ready ─────────────────────
-initializeDatabase()
-  .then(async () => {
-    app.listen(PORT, () => {
-      console.log(`\n🚀 QuantumThread AI Backend running on http://localhost:${PORT}`);
-      console.log(`   Health check: http://localhost:${PORT}/health\n`);
-    });
-  })
-  .catch((err) => {
+(async () => {
+  try {
+    await initializeDatabase();
+    console.log("✅ Connect to Database initialized for Lambda");
+  } catch (err) {
     console.error("Failed to initialize database:", err);
-    process.exit(1);
-  });
+  }
+})();
 
-module.exports = app;
+module.exports.handler = serverless(app);

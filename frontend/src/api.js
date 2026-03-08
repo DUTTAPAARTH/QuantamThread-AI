@@ -1,6 +1,6 @@
 /**
  * QuantumThread AI — API Client
- * Connects to the Express backend at localhost:3001
+ * Connects to the Express backend
  */
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "https://35ot86lr2m.execute-api.us-east-1.amazonaws.com";
