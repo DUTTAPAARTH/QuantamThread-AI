@@ -51,14 +51,16 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
-// ── Start server after DB is ready ─────────────────────
+// ── Start server ───────────────────────────────────────
 (async () => {
   try {
     await initializeDatabase();
-    console.log("✅ Connect to Database initialized for Lambda");
+    console.log("✅ Database initialized");
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
   } catch (err) {
     console.error("Failed to initialize database:", err);
+    process.exit(1);
   }
 })();
-
-module.exports.handler = serverless(app);
