@@ -1,7 +1,10 @@
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 
-const DB_PATH = path.join(__dirname, "quantumthread.db");
+// Use /tmp/ directory for AWS Lambda compatibility (Lambda root is read-only)
+const DB_PATH = process.env.AWS_LAMBDA_FUNCTION_VERSION
+  ? path.join("/tmp", "quantumthread.db")
+  : path.join(__dirname, "quantumthread.db");
 
 const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) {
@@ -26,9 +29,9 @@ function initializeDatabase() {
       `);
 
       // Migrations for existing tables
-      db.run(`ALTER TABLE projects ADD COLUMN repo_url TEXT`, () => {});
-      db.run(`ALTER TABLE projects ADD COLUMN source_path TEXT`, () => {});
-      db.run(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'ready'`, () => {});
+      db.run(`ALTER TABLE projects ADD COLUMN repo_url TEXT`, () => { });
+      db.run(`ALTER TABLE projects ADD COLUMN source_path TEXT`, () => { });
+      db.run(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'ready'`, () => { });
 
       db.run(`
         CREATE TABLE IF NOT EXISTS chat_history (

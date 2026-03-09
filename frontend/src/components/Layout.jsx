@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { fetchProjects, uploadProject, importGithub, fetchProjectStatus, deleteProject } from "../api";
+import { fetchProjects, uploadProject, importGithub, fetchProjectStatus, deleteProject, reanalyzeProject } from "../api";
 import useIntelligenceStore from "../store/intelligence.store";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -280,6 +280,7 @@ function Layout({ mode = "project" }) {
                 New
               </button>
               {selectedProject && (
+                <>
                 <button
                   onClick={async () => {
                     if (!window.confirm(`Delete project "${selectedProject.name}"? This will remove all analysis data.`)) return;
@@ -300,6 +301,37 @@ function Layout({ mode = "project" }) {
                 >
                   <Icon name="delete" className="text-base" />
                 </button>
+                <button
+                  onClick={async () => {
+                    if (!window.confirm("Re-analyze project? This will regenerate all intelligence data.")) return;
+                    try {
+                      await reanalyzeProject(selectedProject.id);
+                      setProjects((prev) => prev.map((p) => p.id === selectedProject.id ? { ...p, status: "analyzing" } : p));
+                      const poll = async () => {
+                        try {
+                          const s = await fetchProjectStatus(selectedProject.id);
+                          if (s.status === "ready") {
+                            setProjects((prev) => prev.map((p) => p.id === selectedProject.id ? { ...p, status: "ready" } : p));
+                          } else if (s.status === "error") {
+                            alert("Re-analysis failed.");
+                            setProjects((prev) => prev.map((p) => p.id === selectedProject.id ? { ...p, status: "error" } : p));
+                          } else {
+                            setTimeout(poll, 3000);
+                          }
+                        } catch (e) { setTimeout(poll, 5000); }
+                      };
+                      setTimeout(poll, 3000);
+                    } catch (err) {
+                      console.error("Failed to re-analyze:", err);
+                      alert("Failed to re-analyze: " + err.message);
+                    }
+                  }}
+                  className="flex items-center gap-1 px-2 py-1.5 text-amber-400 hover:bg-amber-500/15 hover:text-amber-300 rounded text-sm transition-colors"
+                  title="Re-analyze project"
+                >
+                  <Icon name="refresh" className="text-base" />
+                </button>
+                </>
               )}
             </div>
 
