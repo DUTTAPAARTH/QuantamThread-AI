@@ -3,7 +3,9 @@
  * Connects to the Express backend
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "https://35ot86lr2m.execute-api.us-east-1.amazonaws.com";
+const API_BASE = import.meta.env.MODE === "development"
+  ? "http://localhost:3001"
+  : "https://quantumthread-backend.onrender.com";
 
 async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -52,8 +54,8 @@ export const uploadProject = async (file, name) => {
 };
 
 export const importGithub = (url) =>
-  request("/projects/github", { 
-    method: "POST", 
+  request("/projects/github", {
+    method: "POST",
     body: JSON.stringify({ url })
   });
 
