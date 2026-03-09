@@ -1,42 +1,12 @@
-const initSqlJs = require("sql.js");
+const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
-const fs = require("fs");
 
-// Use /tmp/ directory for AWS Lambda compatibility (Lambda root is read-only)
-const DB_PATH = process.env.AWS_LAMBDA_FUNCTION_VERSION
-  ? path.join("/tmp", "quantumthread.db")
-  : path.join(__dirname, "quantumthread.db");
+const DB_PATH = path.join(__dirname, "quantumthread.db");
 
-// sql.js wrapper that mimics the sqlite3 callback API
-let _sqlDb = null;
-
-function getSqlDb() {
-  return _sqlDb;
-}
-
-// Persist the in-memory DB to disk
-function persistDb() {
-  if (!_sqlDb) return;
-  try {
-    const data = _sqlDb.export();
-    fs.writeFileSync(DB_PATH, Buffer.from(data));
-  } catch (e) {
-    console.error("❌ Failed to persist DB:", e.message);
-  }
-}
-
-// Load DB from disk into memory (sql.js works in-memory)
-async function loadDb() {
-  const SQL = await initSqlJs();
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuffer = fs.readFileSync(DB_PATH);
-    _sqlDb = new SQL.Database(fileBuffer);
-  } else {
-    _sqlDb = new SQL.Database();
-  }
-  console.log("✅ Connected to SQLite database (sql.js)");
-  return _sqlDb;
-}
+const db = new sqlite3.Database(DB_PATH, (err) => {
+  if (err) console.error("❌ Failed to connect to SQLite:", err.message);
+  else console.log("✅ Connected to SQLite database");
+});
 
 // Compat shim: db.run / db.get / db.all / db.serialize / db.each
 const db = {
