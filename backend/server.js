@@ -17,11 +17,6 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// ── Serve built frontend ────────────────────────────────
-const path = require("path");
-const frontendDist = path.join(__dirname, "..", "frontend", "dist");
-app.use(express.static(frontendDist));
-
 // ── Health check ───────────────────────────────────────
 app.get("/health", (req, res) => {
   res.json({
