@@ -9,8 +9,10 @@ const { analyzeProject } = require("../services/projectAnalyzer");
 
 const router = express.Router();
 
-// Upload storage — saves ZIPs to backend/uploads/
-const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
+// Upload storage — saves ZIPs to /tmp/uploads for AWS Lambda compatibility
+const UPLOADS_DIR = process.env.AWS_LAMBDA_FUNCTION_VERSION
+  ? path.join("/tmp", "uploads")
+  : path.join(__dirname, "..", "uploads");
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const storage = multer.diskStorage({

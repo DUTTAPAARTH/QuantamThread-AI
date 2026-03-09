@@ -45,16 +45,9 @@ app.use("/impact", impactRouter);
 app.use("/intelligence", intelligenceRouter);
 app.use("/code", codeRouter);
 
-// ── SPA fallback — serve index.html for non-API routes ─
+// ── Catch-all 404 handler for API routes ───────────────
 app.use((req, res, next) => {
-  // If it looks like an API call, return 404 JSON
-  if (req.path.startsWith('/intelligence') || req.path.startsWith('/projects') ||
-      req.path.startsWith('/chat') || req.path.startsWith('/impact') ||
-      req.path.startsWith('/health') || req.path.startsWith('/code')) {
-    return res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
-  }
-  // Otherwise serve the frontend
-  res.sendFile(path.join(frontendDist, 'index.html'));
+  res.status(404).json({ error: `API Route ${req.method} ${req.path} not found` });
 });
 
 // ── Error handler ──────────────────────────────────────
