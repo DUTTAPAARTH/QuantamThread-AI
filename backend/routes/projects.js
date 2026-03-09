@@ -6,6 +6,7 @@ const https = require("https");
 const AdmZip = require("adm-zip");
 const { db, dbRun, dbGet } = require("../db");
 const { analyzeProject } = require("../services/projectAnalyzer");
+const { uploadToS3, downloadFromS3, deleteFromS3, isS3Enabled, s3Key } = require("../services/s3Storage");
 
 const router = express.Router();
 
@@ -110,6 +111,17 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     );
     const projectId = result.lastID;
 
+    // Upload ZIP to S3 for persistent storage
+    let s3ObjKey = null;
+    if (isS3Enabled()) {
+      try {
+        s3ObjKey = await uploadToS3(req.file.path, projectId, name.trim());
+        await dbRun(`UPDATE projects SET s3_key = ? WHERE id = ?`, [s3ObjKey, projectId]);
+      } catch (s3Err) {
+        console.error("⚠️  S3 upload failed (continuing with local):", s3Err.message);
+      }
+    }
+
     // Respond immediately — analysis runs in background
     res.status(201).json({
       id: projectId,
@@ -128,6 +140,8 @@ router.post("/upload", upload.single("file"), async (req, res) => {
       .then((stats) => {
         console.log(`✅ Analysis complete: ${stats.modules} modules from ${stats.files} files`);
         db.run(`UPDATE projects SET status = 'ready' WHERE id = ?`, [projectId]);
+        // Clean up local extracted files if stored in S3
+        if (s3ObjKey) fs.rm(projectDir, { recursive: true, force: true }, () => {});
       })
       .catch((err) => {
         console.error("❌ Analysis failed:", err.message);
@@ -209,6 +223,17 @@ router.post("/github", async (req, res) => {
     );
     const projectId = result.lastID;
 
+    // Upload ZIP to S3 for persistent storage
+    let s3ObjKey = null;
+    if (isS3Enabled()) {
+      try {
+        s3ObjKey = await uploadToS3(zipPath, projectId, repoName);
+        await dbRun(`UPDATE projects SET s3_key = ? WHERE id = ?`, [s3ObjKey, projectId]);
+      } catch (s3Err) {
+        console.error("⚠️  S3 upload failed (continuing with local):", s3Err.message);
+      }
+    }
+
     // Respond immediately
     res.status(201).json({
       id: projectId,
@@ -227,6 +252,8 @@ router.post("/github", async (req, res) => {
       .then((stats) => {
         console.log(`✅ Analysis complete: ${stats.modules} modules from ${stats.files} files`);
         db.run(`UPDATE projects SET status = 'ready' WHERE id = ?`, [projectId]);
+        // Clean up local extracted files if stored in S3
+        if (s3ObjKey) fs.rm(projectDir, { recursive: true, force: true }, () => {});
       })
       .catch((err) => {
         console.error("❌ Analysis failed:", err.message);
@@ -255,22 +282,51 @@ router.post("/:id/reanalyze", async (req, res) => {
   try {
     const project = await dbGet(`SELECT * FROM projects WHERE id = ?`, [req.params.id]);
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (!project.source_path || !fs.existsSync(project.source_path)) {
-      return res.status(400).json({ error: "Project source files not found on disk" });
+
+    let analysisDir = project.source_path;
+    let tempDir = null;
+
+    // If local files are gone but we have S3 backup, restore them
+    if ((!analysisDir || !fs.existsSync(analysisDir)) && project.s3_key && isS3Enabled()) {
+      tempDir = path.join(PROJECTS_DIR, `reanalyze-${Date.now()}-${project.name}`);
+      const tempZip = path.join(UPLOADS_DIR, `reanalyze-${Date.now()}.zip`);
+      try {
+        await downloadFromS3(project.s3_key, tempZip);
+        fs.mkdirSync(tempDir, { recursive: true });
+        const zip = new AdmZip(tempZip);
+        zip.extractAllTo(tempDir, true);
+        fs.unlink(tempZip, () => {});
+        // Find actual root
+        const entries = fs.readdirSync(tempDir);
+        analysisDir = tempDir;
+        if (entries.length === 1) {
+          const single = path.join(tempDir, entries[0]);
+          if (fs.statSync(single).isDirectory()) analysisDir = single;
+        }
+      } catch (s3Err) {
+        if (tempDir && fs.existsSync(tempDir)) fs.rm(tempDir, { recursive: true, force: true }, () => {});
+        fs.unlink(tempZip, () => {});
+        return res.status(400).json({ error: `Cannot restore project from S3: ${s3Err.message}` });
+      }
+    } else if (!analysisDir || !fs.existsSync(analysisDir)) {
+      return res.status(400).json({ error: "Project source files not found" });
     }
 
     db.run(`UPDATE projects SET status = 'analyzing' WHERE id = ?`, [project.id]);
     res.json({ id: project.id, name: project.name, status: "analyzing" });
 
     // Re-run analysis in background
-    analyzeProject(project.source_path, project.name, project.id)
+    analyzeProject(analysisDir, project.name, project.id)
       .then((stats) => {
         console.log(`✅ Re-analysis complete: ${stats.modules} modules from ${stats.files} files`);
         db.run(`UPDATE projects SET status = 'ready' WHERE id = ?`, [project.id]);
+        // Clean up temp dir if we restored from S3
+        if (tempDir) fs.rm(tempDir, { recursive: true, force: true }, () => {});
       })
       .catch((err) => {
         console.error("❌ Re-analysis failed:", err.message);
         db.run(`UPDATE projects SET status = 'error' WHERE id = ?`, [project.id]);
+        if (tempDir) fs.rm(tempDir, { recursive: true, force: true }, () => {});
       });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -304,6 +360,15 @@ router.delete("/:id", async (req, res) => {
     // Clean up extracted files on disk
     if (project.source_path && fs.existsSync(project.source_path)) {
       fs.rm(project.source_path, { recursive: true, force: true }, () => { });
+    }
+
+    // Delete from S3
+    if (project.s3_key && isS3Enabled()) {
+      try {
+        await deleteFromS3(project.s3_key);
+      } catch (s3Err) {
+        console.error("⚠️  S3 delete failed:", s3Err.message);
+      }
     }
 
     console.log(`\u{1F5D1}\uFE0F  Deleted project: ${repoName} (id=${projectId})`);

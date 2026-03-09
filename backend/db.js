@@ -17,6 +17,7 @@ function initializeDatabase() {
           name TEXT NOT NULL,
           repo_url TEXT,
           source_path TEXT,
+          s3_key TEXT,
           status TEXT DEFAULT 'ready',
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -26,6 +27,7 @@ function initializeDatabase() {
       db.run(`ALTER TABLE projects ADD COLUMN repo_url TEXT`, () => { });
       db.run(`ALTER TABLE projects ADD COLUMN source_path TEXT`, () => { });
       db.run(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'ready'`, () => { });
+      db.run(`ALTER TABLE projects ADD COLUMN s3_key TEXT`, () => { });
 
       db.run(`
         CREATE TABLE IF NOT EXISTS chat_history (
