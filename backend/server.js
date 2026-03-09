@@ -1,5 +1,4 @@
 require("dotenv").config();
-const serverless = require("serverless-http");
 const express = require("express");
 const cors = require("cors");
 const { initializeDatabase, dbGet } = require("./db");
@@ -55,10 +54,12 @@ app.use((err, req, res, _next) => {
 (async () => {
   try {
     await initializeDatabase();
-    console.log("✅ Connect to Database initialized for Lambda");
+    console.log("✅ Database initialized");
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
   } catch (err) {
     console.error("Failed to initialize database:", err);
+    process.exit(1);
   }
 })();
-
-module.exports.handler = serverless(app);
