@@ -252,85 +252,153 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
     console.error("📊 [Analyzer] Dependency analysis failed:", depResult.reason?.message);
   }
 
-  // ── Architecture nodes/edges ──────────────────────────
-  console.log("📊 [Analyzer] Building architecture map...");
+  // ── Architecture nodes/edges (AI-generated) ───────────
+  console.log("📊 [Analyzer] Generating architecture map with AI...");
   const moduleList = await dbAll("SELECT * FROM modules WHERE repository = ?", [projectName]);
-  const spacing = 250;
-  const cols = Math.ceil(Math.sqrt(moduleList.length));
-  for (let i = 0; i < moduleList.length; i++) {
-    const row = Math.floor(i / cols);
-    const col = i % cols;
-    const riskLevel = moduleList[i].risk_level || "low";
-    await dbRun(
-      `INSERT INTO architecture_nodes (node_id, repository, position_x, position_y, label, risk, load, risk_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        `node-${i}`,
-        projectName,
-        col * spacing + 100,
-        row * spacing + 100,
-        moduleList[i].name,
-        riskLevel,
-        moduleList[i].bug_count || 0,
-        moduleList[i].risk_score || 0,
-      ]
-    );
+  const depList = await dbAll("SELECT * FROM dependencies WHERE repository = ?", [projectName]);
+
+  const archModuleNames = moduleList.map((m) => m.name);
+  const depSummary = depList.map((d) => ({
+    module: d.module,
+    direct_deps: JSON.parse(d.direct_deps || "[]"),
+    reverse_deps: JSON.parse(d.reverse_deps || "[]"),
+  }));
+
+  const archPrompt = `You are a software architect. Analyze this project and generate a complete architecture graph for visualization.
+
+Project: ${projectName}
+Files:\n${fileSummary}
+Code:\n${codeSnippets.slice(0, 3000)}
+Detected modules: ${archModuleNames.join(", ")}
+Dependencies: ${JSON.stringify(depSummary).slice(0, 1500)}
+
+Return ONLY a JSON object with "nodes" and "edges" arrays.
+- nodes: Each node represents a logical component/module/layer. Include 5-15 nodes.
+  Format: {"id":"node-0","label":"ComponentName","risk":"low|medium|high","risk_score":0-100,"load":0-100,"x":number,"y":number}
+  Position nodes in a meaningful layout: entry points at top (y~50-150), core logic in middle (y~200-400), data/storage at bottom (y~450-600). Spread x from 50 to 700. Group related modules closer together.
+- edges: Each edge represents a dependency/data flow between nodes.
+  Format: {"id":"edge-0","source":"node-0","target":"node-1","animated":false}
+  animated=true for high-risk connections.
+
+Create edges that reflect real imports, data flow, and dependencies in the code. Every node should have at least one edge. Make the graph connected.`;
+
+  let archNodes = [];
+  let archEdges = [];
+
+  try {
+    const archResult = await callBedrock(archPrompt, { max_gen_len: 1024 });
+    const archData = parseJsonFromAI(archResult);
+
+    if (archData && !Array.isArray(archData) && archData.nodes) {
+      archNodes = archData.nodes;
+      archEdges = archData.edges || [];
+    } else if (Array.isArray(archData)) {
+      // AI returned just nodes array — treat as nodes
+      archNodes = archData;
+    }
+  } catch (err) {
+    console.error("📊 [Analyzer] AI architecture generation failed:", err.message);
   }
 
-  // Create edges from dependency data
-  const depList = await dbAll("SELECT * FROM dependencies WHERE repository = ?", [projectName]);
-  let edgeIdx = 0;
-  for (const dep of depList) {
-    const directDeps = JSON.parse(dep.direct_deps || "[]");
-    const sourceNode = moduleList.findIndex((m) => m.name === dep.module);
-    for (const target of directDeps) {
-      const targetNode = moduleList.findIndex((m) => m.name === target);
-      if (sourceNode >= 0 && targetNode >= 0) {
-        await dbRun(
-          `INSERT INTO architecture_edges (edge_id, repository, source, target, animated, stroke, stroke_width) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [
-            `edge-${edgeIdx++}`,
-            projectName,
-            `node-${sourceNode}`,
-            `node-${targetNode}`,
-            0,
-            "#94a3b8",
-            1.5,
-          ]
-        );
+  // Fallback: if AI didn't produce valid nodes, build from modules
+  if (!archNodes.length && moduleList.length > 0) {
+    const spacing = 250;
+    const cols = Math.ceil(Math.sqrt(moduleList.length));
+    archNodes = moduleList.map((m, i) => ({
+      id: `node-${i}`,
+      label: m.name,
+      risk: m.risk_level || "low",
+      risk_score: m.risk_score || 0,
+      load: m.bug_count || 0,
+      x: (i % cols) * spacing + 100,
+      y: Math.floor(i / cols) * spacing + 100,
+    }));
+    // Fallback edges: chain modules sequentially + connect deps
+    archEdges = [];
+    let eIdx = 0;
+    for (let i = 0; i < archNodes.length - 1; i++) {
+      archEdges.push({ id: `edge-${eIdx++}`, source: archNodes[i].id, target: archNodes[i + 1].id, animated: false });
+    }
+    for (const dep of depList) {
+      const directDeps = JSON.parse(dep.direct_deps || "[]");
+      const srcIdx = moduleList.findIndex((m) => m.name === dep.module);
+      for (const tgt of directDeps) {
+        const tgtIdx = moduleList.findIndex((m) => m.name === tgt);
+        if (srcIdx >= 0 && tgtIdx >= 0 && srcIdx !== tgtIdx) {
+          const eid = `edge-${eIdx++}`;
+          if (!archEdges.some((e) => e.source === `node-${srcIdx}` && e.target === `node-${tgtIdx}`)) {
+            archEdges.push({ id: eid, source: `node-${srcIdx}`, target: `node-${tgtIdx}`, animated: false });
+          }
+        }
       }
     }
   }
 
-  console.log(`📊 [Analyzer] Architecture: ${moduleList.length} nodes, ${edgeIdx} edges`);
+  // Insert nodes
+  for (const n of archNodes) {
+    await dbRun(
+      `INSERT INTO architecture_nodes (node_id, repository, position_x, position_y, label, risk, load, risk_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        n.id || `node-${archNodes.indexOf(n)}`,
+        projectName,
+        n.x ?? n.position_x ?? 100,
+        n.y ?? n.position_y ?? 100,
+        n.label || "Unknown",
+        n.risk || "low",
+        n.load || 0,
+        clamp(n.risk_score, 0, 100),
+      ]
+    );
+  }
+
+  // Insert edges
+  for (const e of archEdges) {
+    await dbRun(
+      `INSERT INTO architecture_edges (edge_id, repository, source, target, animated, stroke, stroke_width) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        e.id || `edge-${archEdges.indexOf(e)}`,
+        projectName,
+        e.source,
+        e.target,
+        e.animated ? 1 : 0,
+        e.stroke || "#94a3b8",
+        e.stroke_width || 1.5,
+      ]
+    );
+  }
+
+  console.log(`📊 [Analyzer] Architecture: ${archNodes.length} nodes, ${archEdges.length} edges`);
   console.log(`📊 [Analyzer] ✅ Analysis complete for "${projectName}"\n`);
 
   return { modules: moduleList.length, files: files.length };
 }
 
 /**
- * Try to extract a JSON array from an AI response that may contain markdown/text.
+ * Try to extract JSON (array or object) from an AI response that may contain markdown/text.
  */
 function parseJsonFromAI(text) {
   // Try direct parse first
   try {
-    const parsed = JSON.parse(text);
-    return parsed;
+    return JSON.parse(text);
   } catch { /* continue */ }
 
-  // Try to find JSON array in the response
-  const match = text.match(/\[[\s\S]*\]/);
-  if (match) {
-    try {
-      return JSON.parse(match[0]);
-    } catch { /* continue */ }
-  }
-
-  // Try to find JSON object
+  // Try to find JSON object (for architecture { nodes, edges } responses)
   const objMatch = text.match(/\{[\s\S]*\}/);
   if (objMatch) {
     try {
       const obj = JSON.parse(objMatch[0]);
+      // If it has nodes/edges, return as-is (architecture response)
+      if (obj.nodes || obj.edges) return obj;
+      // Otherwise wrap single objects in array for other prompts
       return Array.isArray(obj) ? obj : [obj];
+    } catch { /* continue */ }
+  }
+
+  // Try to find JSON array in the response
+  const arrMatch = text.match(/\[[\s\S]*\]/);
+  if (arrMatch) {
+    try {
+      return JSON.parse(arrMatch[0]);
     } catch { /* continue */ }
   }
 

@@ -3,7 +3,7 @@
  * Connects to the Express backend at localhost:3001
  */
 
-const API_BASE = "https://35ot86lr2m.execute-api.us-east-1.amazonaws.com";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "https://35ot86lr2m.execute-api.us-east-1.amazonaws.com";
 
 async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -43,7 +43,7 @@ export const uploadProject = async (file, name) => {
   const formData = new FormData();
   formData.append("file", file);
   if (name) formData.append("name", name);
-  const res = await fetch("/projects/upload", { method: "POST", body: formData });
+  const res = await fetch(`${API_BASE}/projects/upload`, { method: "POST", body: formData });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `Upload failed (HTTP ${res.status})`);
@@ -52,9 +52,15 @@ export const uploadProject = async (file, name) => {
 };
 
 export const importGithub = (url) =>
-  request("/projects/github", { method: "POST", body: JSON.stringify({ url }) });
+  request("/projects/github", { 
+    method: "POST", 
+    body: JSON.stringify({ url })
+  });
 
 export const fetchProjectStatus = (id) => request(`/projects/${id}/status`);
+
+export const reanalyzeProject = (id) =>
+  request(`/projects/${id}/reanalyze`, { method: "POST" });
 
 export const deleteProject = (id) =>
   request(`/projects/${id}`, { method: "DELETE" });
