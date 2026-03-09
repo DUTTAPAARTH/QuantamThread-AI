@@ -1,22 +1,93 @@
-const sqlite3 = require("sqlite3").verbose();
+const initSqlJs = require("sql.js");
 const path = require("path");
+const fs = require("fs");
 
 // Use /tmp/ directory for AWS Lambda compatibility (Lambda root is read-only)
 const DB_PATH = process.env.AWS_LAMBDA_FUNCTION_VERSION
   ? path.join("/tmp", "quantumthread.db")
   : path.join(__dirname, "quantumthread.db");
 
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) {
-    console.error("❌ Failed to connect to SQLite:", err.message);
-  } else {
-    console.log("✅ Connected to SQLite database");
+// sql.js wrapper that mimics the sqlite3 callback API
+let _sqlDb = null;
+
+function getSqlDb() {
+  return _sqlDb;
+}
+
+// Persist the in-memory DB to disk
+function persistDb() {
+  if (!_sqlDb) return;
+  try {
+    const data = _sqlDb.export();
+    fs.writeFileSync(DB_PATH, Buffer.from(data));
+  } catch (e) {
+    console.error("❌ Failed to persist DB:", e.message);
   }
-});
+}
+
+// Load DB from disk into memory (sql.js works in-memory)
+async function loadDb() {
+  const SQL = await initSqlJs();
+  if (fs.existsSync(DB_PATH)) {
+    const fileBuffer = fs.readFileSync(DB_PATH);
+    _sqlDb = new SQL.Database(fileBuffer);
+  } else {
+    _sqlDb = new SQL.Database();
+  }
+  console.log("✅ Connected to SQLite database (sql.js)");
+  return _sqlDb;
+}
+
+// Compat shim: db.run / db.get / db.all / db.serialize / db.each
+const db = {
+  run(sql, params, cb) {
+    if (typeof params === "function") { cb = params; params = []; }
+    try {
+      getSqlDb().run(sql, params || []);
+      persistDb();
+      if (cb) cb.call({ lastID: getSqlDb().exec("SELECT last_insert_rowid()")[0]?.values[0][0] || 0, changes: 1 }, null);
+    } catch (err) {
+      if (cb) cb(err); else console.error("db.run error:", err.message);
+    }
+  },
+  get(sql, params, cb) {
+    if (typeof params === "function") { cb = params; params = []; }
+    try {
+      const stmt = getSqlDb().prepare(sql);
+      stmt.bind(params || []);
+      const row = stmt.step() ? stmt.getAsObject() : undefined;
+      stmt.free();
+      if (cb) cb(null, row);
+    } catch (err) {
+      if (cb) cb(err);
+    }
+  },
+  all(sql, params, cb) {
+    if (typeof params === "function") { cb = params; params = []; }
+    try {
+      const results = getSqlDb().exec(sql, params || []);
+      if (!results.length) { if (cb) cb(null, []); return; }
+      const { columns, values } = results[0];
+      const rows = values.map(v => Object.fromEntries(columns.map((c, i) => [c, v[i]])));
+      if (cb) cb(null, rows);
+    } catch (err) {
+      if (cb) cb(err);
+    }
+  },
+  serialize(fn) { if (fn) fn(); },
+  each(sql, params, rowCb, doneCb) {
+    this.all(sql, params, (err, rows) => {
+      if (err) { if (doneCb) doneCb(err); return; }
+      rows.forEach(r => rowCb(null, r));
+      if (doneCb) doneCb(null, rows.length);
+    });
+  },
+};
 
 function initializeDatabase() {
-  return new Promise((resolve, reject) => {
-    db.serialize(() => {
+  return loadDb().then(() => {
+    return new Promise((resolve, reject) => {
+      db.serialize(() => {
       db.run(`
         CREATE TABLE IF NOT EXISTS projects (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,6 +249,7 @@ function initializeDatabase() {
             reject(err);
           } else {
             console.log("✅ All database tables ready");
+            persistDb();
             resolve();
           }
         }
