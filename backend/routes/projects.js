@@ -36,7 +36,9 @@ const upload = multer({
 });
 
 // Extracted projects live here
-const PROJECTS_DIR = path.join(__dirname, "..", "projects");
+const PROJECTS_DIR = process.env.AWS_LAMBDA_FUNCTION_VERSION
+  ? path.join("/tmp", "projects")
+  : path.join(__dirname, "..", "projects");
 if (!fs.existsSync(PROJECTS_DIR)) fs.mkdirSync(PROJECTS_DIR, { recursive: true });
 
 // Helper: Download file from HTTPS URL with redirect support
@@ -119,7 +121,7 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     });
 
     // Clean up uploaded ZIP
-    fs.unlink(req.file.path, () => {});
+    fs.unlink(req.file.path, () => { });
 
     // Run analysis in background
     analyzeProject(analysisDir, name.trim(), projectId)
@@ -301,7 +303,7 @@ router.delete("/:id", async (req, res) => {
 
     // Clean up extracted files on disk
     if (project.source_path && fs.existsSync(project.source_path)) {
-      fs.rm(project.source_path, { recursive: true, force: true }, () => {});
+      fs.rm(project.source_path, { recursive: true, force: true }, () => { });
     }
 
     console.log(`\u{1F5D1}\uFE0F  Deleted project: ${repoName} (id=${projectId})`);
