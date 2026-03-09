@@ -8,56 +8,9 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
   else console.log("✅ Connected to SQLite database");
 });
 
-// Compat shim: db.run / db.get / db.all / db.serialize / db.each
-const db = {
-  run(sql, params, cb) {
-    if (typeof params === "function") { cb = params; params = []; }
-    try {
-      getSqlDb().run(sql, params || []);
-      persistDb();
-      if (cb) cb.call({ lastID: getSqlDb().exec("SELECT last_insert_rowid()")[0]?.values[0][0] || 0, changes: 1 }, null);
-    } catch (err) {
-      if (cb) cb(err); else console.error("db.run error:", err.message);
-    }
-  },
-  get(sql, params, cb) {
-    if (typeof params === "function") { cb = params; params = []; }
-    try {
-      const stmt = getSqlDb().prepare(sql);
-      stmt.bind(params || []);
-      const row = stmt.step() ? stmt.getAsObject() : undefined;
-      stmt.free();
-      if (cb) cb(null, row);
-    } catch (err) {
-      if (cb) cb(err);
-    }
-  },
-  all(sql, params, cb) {
-    if (typeof params === "function") { cb = params; params = []; }
-    try {
-      const results = getSqlDb().exec(sql, params || []);
-      if (!results.length) { if (cb) cb(null, []); return; }
-      const { columns, values } = results[0];
-      const rows = values.map(v => Object.fromEntries(columns.map((c, i) => [c, v[i]])));
-      if (cb) cb(null, rows);
-    } catch (err) {
-      if (cb) cb(err);
-    }
-  },
-  serialize(fn) { if (fn) fn(); },
-  each(sql, params, rowCb, doneCb) {
-    this.all(sql, params, (err, rows) => {
-      if (err) { if (doneCb) doneCb(err); return; }
-      rows.forEach(r => rowCb(null, r));
-      if (doneCb) doneCb(null, rows.length);
-    });
-  },
-};
-
 function initializeDatabase() {
-  return loadDb().then(() => {
-    return new Promise((resolve, reject) => {
-      db.serialize(() => {
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
       db.run(`
         CREATE TABLE IF NOT EXISTS projects (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,7 +172,6 @@ function initializeDatabase() {
             reject(err);
           } else {
             console.log("✅ All database tables ready");
-            persistDb();
             resolve();
           }
         }
