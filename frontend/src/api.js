@@ -105,3 +105,62 @@ export const fetchQueryHistory = () => request("/code/history");
 
 // — Health —————————————————————————————————————————————
 export const fetchHealth = () => request("/health");
+
+/**
+ * Stream agent results one by one via SSE (GPT-style).
+ * Calls onAgent({ agent, reply, confidence }) for each agent as it arrives.
+ * Calls onDone() when all agents have responded.
+ * Calls onError(err) on network/parse failure.
+ * Returns an AbortController so the caller can cancel.
+ */
+export function queryAgentsStream(prompt, onAgent, onDone, onError) {
+  const controller = new AbortController();
+
+  (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/code/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6).trim();
+          if (payload === "[DONE]") { onDone(); return; }
+          if (!payload || payload.startsWith(":")) continue;
+          try {
+            const parsed = JSON.parse(payload);
+            if (parsed.error) throw new Error(parsed.error);
+            onAgent(parsed);
+          } catch (_) {
+            // malformed line
+          }
+        }
+      }
+      onDone();
+    } catch (err) {
+      if (err.name !== "AbortError") onError(err);
+    }
+  })();
+
+  return controller;
+}

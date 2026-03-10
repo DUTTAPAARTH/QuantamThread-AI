@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Project Analyzer — Scans uploaded project files and populates
  * intelligence DB tables using AI agents.
  */
@@ -7,6 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { dbRun, dbAll } = require("../db");
 const { callBedrock } = require("./bedrockClient");
+const { saveIntelligenceToS3 } = require("./s3Storage");
 
 const CODE_EXTENSIONS = new Set([
   ".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".go", ".rs",
