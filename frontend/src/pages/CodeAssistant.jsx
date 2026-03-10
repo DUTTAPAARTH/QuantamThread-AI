@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { queryAgents, fetchHealth } from "../api";
+import { queryAgents } from "../api";
+
 
 const darkBg  = "#0B0F1A";
 const cardBg  = "rgba(26,31,46,0.6)";
@@ -43,17 +44,9 @@ function CodeAssistant() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState({});
-  const [serverStatus, setServerStatus] = useState("unknown"); // "unknown" | "online" | "warming"
+  const [loadingStatus, setLoadingStatus] = useState("");
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-
-  // Pre-warm backend and show status
-  useEffect(() => {
-    setServerStatus("warming");
-    fetchHealth()
-      .then(() => setServerStatus("online"))
-      .catch(() => setServerStatus("online")); // retry logic in api.js handles the actual warmup
-  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -71,9 +64,14 @@ function CodeAssistant() {
     setMessages((prev) => [...prev, userMsg]);
     setPrompt("");
     setLoading(true);
+    setLoadingStatus("Analyzing with 5 agents...");
+
+    // Show a hint if it's taking long (server may be waking up)
+    const slowTimer = setTimeout(() => setLoadingStatus("Waking up server — this takes up to 30s..."), 8000);
 
     try {
       const data = await queryAgents(input);
+      clearTimeout(slowTimer);
       if (!data.agents) throw new Error("Invalid response from server");
 
       const aiMsg = {
@@ -83,12 +81,17 @@ function CodeAssistant() {
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (err) {
+      clearTimeout(slowTimer);
+      const msg = err.name === "AbortError" || err.message === "Failed to fetch"
+        ? "Could not reach the server. It may be starting up — please try again in a moment."
+        : err.message;
       setMessages((prev) => [
         ...prev,
-        { role: "error", content: err.message, timestamp: new Date().toISOString() },
+        { role: "error", content: msg, timestamp: new Date().toISOString() },
       ]);
     } finally {
       setLoading(false);
+      setLoadingStatus("");
       inputRef.current?.focus();
     }
   };
@@ -125,20 +128,7 @@ function CodeAssistant() {
                 <br />
                 <span className="text-slate-400 text-xs">5 specialized agents analyze every query in parallel.</span>
               </p>
-              {serverStatus === "warming" && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="inline-flex items-center gap-2 mt-3 px-3 py-1.5 rounded-full text-xs font-medium bg-amber-500/10 border border-amber-500/30 text-amber-400"
-                >
-                  <motion.span
-                    animate={{ opacity: [1, 0.3, 1] }}
-                    transition={{ duration: 1.2, repeat: Infinity }}
-                    className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"
-                  />
-                  AI server starting up — first response may take ~30s
-                </motion.div>
-              )}
+
             </div>
 
             {/* Agent badges */}
@@ -166,7 +156,7 @@ function CodeAssistant() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.04 }}
                   onClick={() => handleSubmit(s.prompt)}
-                  className="group flex flex-col items-center gap-2 p-4 rounded-xl border border-white/[0.06] hover:border-indigo-500/30 transition-all text-center"
+                  className="group flex flex-col items-center gap-2 p-4 rounded-xl border border-white/[0.06] hover:border-indigo-500/30 transition-all text-center cursor-pointer"
                   style={{ ...glass, boxShadow: glowShadow }}
                 >
                   <Icon name={s.icon} className="text-2xl text-slate-500 group-hover:text-indigo-400 transition-colors" />
@@ -284,13 +274,15 @@ function CodeAssistant() {
                 >
                   <Icon name="smart_toy" className="text-white text-base animate-pulse" />
                 </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-sm">5 agents analyzing</span>
-                  <span className="flex gap-0.5 ml-1">
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                  </span>
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm">{loadingStatus || "5 agents analyzing"}</span>
+                    <span className="flex gap-0.5 ml-1">
+                      <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                      <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                      <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                    </span>
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -319,14 +311,14 @@ function CodeAssistant() {
             <button
               onClick={() => handleSubmit()}
               disabled={loading || !prompt.trim()}
-              className="shrink-0 w-11 h-11 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 text-white rounded-xl flex items-center justify-center transition-colors shadow-sm"
+              className="shrink-0 w-11 h-11 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 disabled:opacity-60 text-white rounded-xl flex items-center justify-center transition-colors shadow-sm"
               style={{ boxShadow: "0 0 12px rgba(99,102,241,0.3)" }}
             >
               <Icon name="send" className="text-xl" />
             </button>
           </div>
           <p className="text-[11px] text-slate-400 mt-2 text-center">
-            Press Enter to send. 5 agents (Architecture, Bug Detection, Security, Performance, Tutor) analyze in parallel.
+            Press Enter to send — 5 agents analyze in parallel.
           </p>
         </div>
       </div>

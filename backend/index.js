@@ -1,7 +1,8 @@
-require("dotenv").config();
+﻿require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const { initializeDatabase, dbGet } = require("./db");
+const { initializeDatabase, dbGet, dbRun, dbAll } = require("./db");
+const { isS3Enabled, listProjectsFromS3 } = require("./services/s3Storage");
 
 const projectsRouter = require("./routes/projects");
 const chatRouter = require("./routes/chat");
@@ -20,7 +21,6 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow all amplifyapp.com subdomains, localhost, and any explicitly listed origins
       if (
         !origin ||
         allowedOrigins.includes(origin) ||
@@ -34,7 +34,7 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: "50mb" }));
 
 // ── Root ───────────────────────────────────────────────
 app.get("/", (req, res) => {
@@ -47,14 +47,25 @@ app.get("/health", (req, res) => {
     status: "ok",
     service: "QuantumThread AI Backend",
     timestamp: new Date().toISOString(),
-    agents: [
-      "architecture",
-      "bug_detection",
-      "security",
-      "performance",
-      "tutor",
-    ],
+    agents: ["architecture", "bug_detection", "security", "performance", "tutor"],
   });
+});
+
+// ── S3 debug ───────────────────────────────────────────
+app.get("/debug/s3", async (req, res) => {
+  try {
+    const s3Enabled = isS3Enabled();
+    const s3Projects = s3Enabled ? await listProjectsFromS3() : [];
+    const dbProjects = await dbAll("SELECT id, name, s3_key, status FROM projects");
+    res.json({
+      s3Enabled,
+      s3Bucket: process.env.S3_BUCKET || null,
+      s3Projects,
+      dbProjects,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Routes ─────────────────────────────────────────────
@@ -75,11 +86,48 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: err.message || "Internal server error" });
 });
 
+// ── Restore projects from S3 into SQLite on every boot ─
+// Render free tier wipes the filesystem on restart, so SQLite is empty each time.
+// This scans S3 and re-inserts any missing project rows.
+async function restoreProjectsFromS3() {
+  if (!isS3Enabled()) {
+    console.log("S3 not enabled — skipping project restore");
+    return;
+  }
+  try {
+    const s3Projects = await listProjectsFromS3();
+    console.log(`☁️  Found ${s3Projects.length} project(s) in S3`);
+    let restored = 0;
+    for (const p of s3Projects) {
+      const existing = await dbGet("SELECT id FROM projects WHERE id = ?", [p.id]);
+      if (!existing) {
+        await dbRun(
+          "INSERT INTO projects (id, name, s3_key, status, created_at) VALUES (?, ?, ?, ?, ?)",
+          [p.id, p.name, p.s3Key, "ready", new Date().toISOString()]
+        );
+        restored++;
+        console.log(`☁️  Restored: ${p.name} (id=${p.id})`);
+      }
+    }
+    if (restored > 0) {
+      await dbRun(
+        "UPDATE sqlite_sequence SET seq = (SELECT MAX(id) FROM projects) WHERE name = 'projects'"
+      ).catch(() => {});
+      console.log(`☁️  Restored ${restored} project(s) from S3`);
+    } else {
+      console.log("☁️  All S3 projects already in DB");
+    }
+  } catch (err) {
+    console.error("⚠️  S3 project restore failed:", err.message);
+  }
+}
+
 // ── Start server ───────────────────────────────────────
 (async () => {
   try {
     await initializeDatabase();
     console.log("✅ Database initialized");
+    await restoreProjectsFromS3();
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
     });

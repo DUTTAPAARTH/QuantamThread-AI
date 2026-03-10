@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { fetchProjects, uploadProject, importGithub, fetchProjectStatus, deleteProject, reanalyzeProject, sendChat, fetchHealth } from "../api";
+import { fetchProjects, uploadProject, importGithub, fetchProjectStatus, deleteProject, reanalyzeProject, sendChat } from "../api";
 import useIntelligenceStore from "../store/intelligence.store";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -51,11 +51,6 @@ function Layout({ mode = "project" }) {
 
   const navItems = mode === "assistant" ? navItemsAssistant : navItemsProject;
   const isAssistant = mode === "assistant";
-
-  // Pre-warm backend on mount (Render free tier sleeps after inactivity)
-  useEffect(() => {
-    fetchHealth().catch(() => {});
-  }, []);
 
   // Fetch projects on mount
   useEffect(() => {
