@@ -98,4 +98,39 @@ async function listProjectsFromS3() {
   return projects;
 }
 
-module.exports = { uploadToS3, downloadFromS3, deleteFromS3, isS3Enabled, s3Key, listProjectsFromS3 };
+
+/**
+ * Save intelligence analysis results as JSON to S3.
+ * Key: projects/{id}/intelligence.json
+ */
+async function saveIntelligenceToS3(projectId, data) {
+  if (!s3) return;
+  const key = `projects/${projectId}/intelligence.json`;
+  await s3.send(new PutObjectCommand({
+    Bucket: BUCKET,
+    Key: key,
+    Body: JSON.stringify(data),
+    ContentType: "application/json",
+  }));
+  console.log(`☁️  Saved intelligence to S3: ${key}`);
+}
+
+/**
+ * Load intelligence analysis results from S3.
+ * Returns null if not found.
+ */
+async function loadIntelligenceFromS3(projectId) {
+  if (!s3) return null;
+  const key = `projects/${projectId}/intelligence.json`;
+  try {
+    const res = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+    const chunks = [];
+    for await (const chunk of res.Body) chunks.push(chunk);
+    return JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+  } catch (err) {
+    if (err.name === "NoSuchKey" || err.$metadata?.httpStatusCode === 404) return null;
+    throw err;
+  }
+}
+
+module.exports = { uploadToS3, downloadFromS3, deleteFromS3, isS3Enabled, s3Key, listProjectsFromS3, saveIntelligenceToS3, loadIntelligenceFromS3 };

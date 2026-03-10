@@ -10,10 +10,10 @@ const { BedrockRuntimeClient, ConverseCommand } = require("@aws-sdk/client-bedro
 const REGION = process.env.AWS_REGION || "us-east-1";
 const MODEL = process.env.BEDROCK_MODEL || "meta.llama3-70b-instruct-v1:0";
 
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 2000;
-const MAX_CONCURRENT = 2;
-const INTER_REQUEST_DELAY_MS = 800;
+const MAX_RETRIES = 6;
+const BASE_DELAY_MS = 5000;
+const MAX_CONCURRENT = 1;
+const INTER_REQUEST_DELAY_MS = 2000;
 
 const client = new BedrockRuntimeClient({ region: REGION });
 
@@ -77,7 +77,10 @@ async function _callBedrockInner(prompt, opts = {}) {
       console.log(`[BedrockClient] Response received (${generatedText.length} chars)`);
       return generatedText.trim();
     } catch (err) {
-      const isThrottle = err.name === "ThrottlingException" || err.$metadata?.httpStatusCode === 429;
+      const isThrottle =
+        err.name === "ThrottlingException" ||
+        err.$metadata?.httpStatusCode === 429 ||
+        (err.message && err.message.toLowerCase().includes("too many requests"));
       if (isThrottle && attempt < MAX_RETRIES) continue;
       console.error(`[BedrockClient] Error: ${err.message}`);
       throw new Error(`Bedrock error: ${err.message}`);
