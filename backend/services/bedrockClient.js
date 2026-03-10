@@ -1,11 +1,11 @@
 /**
- * Bedrock Client – Calls Amazon Bedrock with Meta Llama 3.
+ * Bedrock Client – Calls Amazon Bedrock via the Converse API.
  * Uses @aws-sdk/client-bedrock-runtime with AWS Signature V4 auth.
  * Includes a concurrency-limited request queue to avoid throttling.
  */
 
 require("dotenv").config();
-const { BedrockRuntimeClient, InvokeModelCommand } = require("@aws-sdk/client-bedrock-runtime");
+const { BedrockRuntimeClient, ConverseCommand } = require("@aws-sdk/client-bedrock-runtime");
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const MODEL = process.env.BEDROCK_MODEL || "meta.llama3-70b-instruct-v1:0";
@@ -52,13 +52,6 @@ async function callBedrock(prompt, opts = {}) {
 }
 
 async function _callBedrockInner(prompt, opts = {}) {
-  const body = JSON.stringify({
-    prompt: `<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n${prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n`,
-    max_gen_len: opts.max_gen_len || 1024,
-    temperature: 0.7,
-    top_p: 0.9,
-  });
-
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
       const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
@@ -69,16 +62,18 @@ async function _callBedrockInner(prompt, opts = {}) {
     console.log(`[BedrockClient] Calling model: ${MODEL} (attempt ${attempt + 1})`);
 
     try {
-      const command = new InvokeModelCommand({
+      const command = new ConverseCommand({
         modelId: MODEL,
-        contentType: "application/json",
-        accept: "application/json",
-        body,
+        messages: [{ role: "user", content: [{ text: prompt }] }],
+        inferenceConfig: {
+          maxTokens: opts.max_gen_len || 1024,
+          temperature: 0.7,
+          topP: 0.9,
+        },
       });
 
       const response = await client.send(command);
-      const data = JSON.parse(Buffer.from(response.body).toString("utf-8"));
-      const generatedText = data.generation || data.output || "No response from model.";
+      const generatedText = response.output?.message?.content?.[0]?.text || "No response from model.";
       console.log(`[BedrockClient] Response received (${generatedText.length} chars)`);
       return generatedText.trim();
     } catch (err) {
