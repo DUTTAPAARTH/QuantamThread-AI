@@ -1,9 +1,9 @@
-/**
+﻿/**
  * S3 Storage Service — Upload, download, and delete project ZIPs in S3.
  * Falls back gracefully when S3_BUCKET is not configured.
  */
 
-const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const fs = require("fs");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
@@ -71,4 +71,31 @@ function isS3Enabled() {
   return !!s3;
 }
 
-module.exports = { uploadToS3, downloadFromS3, deleteFromS3, isS3Enabled, s3Key };
+
+/**
+ * List all projects stored in S3.
+ * Parses keys in format: projects/{id}/{name}.zip
+ * @returns {Promise<Array>} Array of { id, name, s3Key }
+ */
+async function listProjectsFromS3() {
+  if (!s3) return [];
+  const projects = [];
+  let continuationToken = undefined;
+  do {
+    const res = await s3.send(new ListObjectsV2Command({
+      Bucket: BUCKET,
+      Prefix: "projects/",
+      ContinuationToken: continuationToken,
+    }));
+    for (const obj of (res.Contents || [])) {
+      const match = obj.Key.match(/^projects\/(\d+)\/(.+)\.zip$/);
+      if (match) {
+        projects.push({ id: parseInt(match[1]), name: match[2], s3Key: obj.Key });
+      }
+    }
+    continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return projects;
+}
+
+module.exports = { uploadToS3, downloadFromS3, deleteFromS3, isS3Enabled, s3Key, listProjectsFromS3 };

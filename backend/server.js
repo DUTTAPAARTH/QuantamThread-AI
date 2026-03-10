@@ -1,8 +1,9 @@
-require("dotenv").config();
+﻿require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const serverless = require("serverless-http");
-const { initializeDatabase, dbGet } = require("./db");
+const { initializeDatabase, dbGet, dbRun, dbAll } = require("./db");
+const { isS3Enabled, listProjectsFromS3 } = require("./services/s3Storage");
 
 const projectsRouter = require("./routes/projects");
 const chatRouter = require("./routes/chat");
@@ -76,6 +77,34 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
+
+// On Render, SQLite is wiped on every restart. Re-register any projects found in S3.
+async function restoreProjectsFromS3() {
+  if (!isS3Enabled()) return;
+  try {
+    const s3Projects = await listProjectsFromS3();
+    if (s3Projects.length === 0) return;
+    let restored = 0;
+    for (const p of s3Projects) {
+      const existing = await dbGet(`SELECT id FROM projects WHERE id = ?`, [p.id]);
+      if (!existing) {
+        await dbRun(
+          `INSERT INTO projects (id, name, s3_key, status, created_at) VALUES (?, ?, ?, ?, ?)`,
+          [p.id, p.name, p.s3Key, "ready", new Date().toISOString()]
+        );
+        restored++;
+        console.log(`☁️  Restored from S3: ${p.name} (id=${p.id})`);
+      }
+    }
+    // Keep sqlite_sequence in sync so new project IDs don't collide
+    if (restored > 0) {
+      await dbRun(`UPDATE sqlite_sequence SET seq = (SELECT MAX(id) FROM projects) WHERE name = 'projects'`).catch(() => {});
+      console.log(`☁️  S3 restore complete — ${restored} project(s) re-registered`);
+    }
+  } catch (err) {
+    console.error("⚠️  S3 project restore failed:", err.message);
+  }
+}
 // ── Start server after DB is ready ─────────────────────
 if (process.env.AWS_LAMBDA_FUNCTION_VERSION) {
   // Lambda: initialize DB on cold start, no listener needed
@@ -91,6 +120,7 @@ if (process.env.AWS_LAMBDA_FUNCTION_VERSION) {
   // Render / local dev: initialize DB then start Express listener
   initializeDatabase()
     .then(() => {
+      restoreProjectsFromS3().catch((err) => console.error('S3 restore error:', err.message));
       app.listen(PORT, () => {
         console.log(`\n🚀 QuantumThread AI Backend running on http://localhost:${PORT}`);
         console.log(`   Health check: http://localhost:${PORT}/health\n`);
