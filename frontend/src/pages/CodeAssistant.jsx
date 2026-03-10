@@ -44,6 +44,7 @@ function CodeAssistant() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState({});
+  const [loadingStatus, setLoadingStatus] = useState("");
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -63,9 +64,14 @@ function CodeAssistant() {
     setMessages((prev) => [...prev, userMsg]);
     setPrompt("");
     setLoading(true);
+    setLoadingStatus("Analyzing with 5 agents...");
+
+    // Show a hint if it's taking long (server may be waking up)
+    const slowTimer = setTimeout(() => setLoadingStatus("Waking up server — this takes up to 30s..."), 8000);
 
     try {
       const data = await queryAgents(input);
+      clearTimeout(slowTimer);
       if (!data.agents) throw new Error("Invalid response from server");
 
       const aiMsg = {
@@ -75,12 +81,17 @@ function CodeAssistant() {
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (err) {
+      clearTimeout(slowTimer);
+      const msg = err.name === "AbortError" || err.message === "Failed to fetch"
+        ? "Could not reach the server. It may be starting up — please try again in a moment."
+        : err.message;
       setMessages((prev) => [
         ...prev,
-        { role: "error", content: err.message, timestamp: new Date().toISOString() },
+        { role: "error", content: msg, timestamp: new Date().toISOString() },
       ]);
     } finally {
       setLoading(false);
+      setLoadingStatus("");
       inputRef.current?.focus();
     }
   };
@@ -263,13 +274,15 @@ function CodeAssistant() {
                 >
                   <Icon name="smart_toy" className="text-white text-base animate-pulse" />
                 </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-sm">5 agents analyzing</span>
-                  <span className="flex gap-0.5 ml-1">
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                  </span>
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm">{loadingStatus || "5 agents analyzing"}</span>
+                    <span className="flex gap-0.5 ml-1">
+                      <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                      <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                      <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                    </span>
+                  </div>
                 </div>
               </motion.div>
             )}
