@@ -48,6 +48,20 @@ app.get("/health", (req, res) => {
   });
 });
 
+
+// ── S3 debug (temporary) ───────────────────────────────
+app.get("/debug/s3", async (req, res) => {
+  try {
+    const { isS3Enabled, listProjectsFromS3 } = require("./services/s3Storage");
+    const { dbAll } = require("./db");
+    const s3Enabled = isS3Enabled();
+    const s3Projects = s3Enabled ? await listProjectsFromS3() : [];
+    const dbProjects = await dbAll("SELECT id, name, s3_key, status FROM projects");
+    res.json({ s3Enabled, s3Bucket: process.env.S3_BUCKET || null, s3Projects, dbProjects });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── API Routes ─────────────────────────────────────────
 app.use("/projects", projectsRouter);
 app.use("/chat", chatRouter);
