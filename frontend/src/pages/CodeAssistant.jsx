@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { queryAgents, fetchHealth } from "../api";
+import { queryAgents } from "../api";
+
 
 const darkBg  = "#0B0F1A";
 const cardBg  = "rgba(26,31,46,0.6)";
@@ -43,22 +44,8 @@ function CodeAssistant() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState({});
-  const [serverStatus, setServerStatus] = useState("unknown"); // "unknown" | "online" | "warming"
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-
-  // Pre-warm backend and show status — keep retrying until server responds
-  useEffect(() => {
-    setServerStatus("warming");
-    const ping = () =>
-      fetchHealth()
-        .then(() => setServerStatus("online"))
-        .catch(() => {
-          // Server still waking — try again in 5s
-          setTimeout(ping, 5000);
-        });
-    ping();
-  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -70,7 +57,7 @@ function CodeAssistant() {
 
   const handleSubmit = async (text) => {
     const input = (text || prompt).trim();
-    if (!input || loading || serverStatus === "warming") return;
+    if (!input || loading) return;
 
     const userMsg = { role: "user", content: input, timestamp: new Date().toISOString() };
     setMessages((prev) => [...prev, userMsg]);
@@ -130,20 +117,7 @@ function CodeAssistant() {
                 <br />
                 <span className="text-slate-400 text-xs">5 specialized agents analyze every query in parallel.</span>
               </p>
-              {serverStatus === "warming" && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="inline-flex items-center gap-2 mt-3 px-3 py-1.5 rounded-full text-xs font-medium bg-amber-500/10 border border-amber-500/30 text-amber-400"
-                >
-                  <motion.span
-                    animate={{ opacity: [1, 0.3, 1] }}
-                    transition={{ duration: 1.2, repeat: Infinity }}
-                    className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"
-                  />
-                  AI server is starting up — please wait (up to 60s on first load)
-                </motion.div>
-              )}
+
             </div>
 
             {/* Agent badges */}
@@ -170,9 +144,8 @@ function CodeAssistant() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.04 }}
-                  onClick={() => serverStatus !== "warming" && handleSubmit(s.prompt)}
-                  disabled={serverStatus === "warming"}
-                  className={`group flex flex-col items-center gap-2 p-4 rounded-xl border border-white/[0.06] transition-all text-center ${serverStatus === "warming" ? "opacity-50 cursor-not-allowed" : "hover:border-indigo-500/30 cursor-pointer"}`}
+                  onClick={() => handleSubmit(s.prompt)}
+                  className="group flex flex-col items-center gap-2 p-4 rounded-xl border border-white/[0.06] hover:border-indigo-500/30 transition-all text-center cursor-pointer"
                   style={{ ...glass, boxShadow: glowShadow }}
                 >
                   <Icon name={s.icon} className="text-2xl text-slate-500 group-hover:text-indigo-400 transition-colors" />
@@ -324,29 +297,15 @@ function CodeAssistant() {
             </div>
             <button
               onClick={() => handleSubmit()}
-              disabled={loading || !prompt.trim() || serverStatus === "warming"}
+              disabled={loading || !prompt.trim()}
               className="shrink-0 w-11 h-11 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 disabled:opacity-60 text-white rounded-xl flex items-center justify-center transition-colors shadow-sm"
               style={{ boxShadow: "0 0 12px rgba(99,102,241,0.3)" }}
             >
-              {serverStatus === "warming" ? (
-                <motion.span
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
-                  className="material-symbols-outlined text-xl"
-                >
-                  progress_activity
-                </motion.span>
-              ) : (
-                <Icon name="send" className="text-xl" />
-              )}
+              <Icon name="send" className="text-xl" />
             </button>
           </div>
-          <p className="text-[11px] mt-2 text-center">
-            {serverStatus === "warming" ? (
-              <span className="text-amber-400">AI server is starting up… please wait (can take up to 60s on first load)</span>
-            ) : (
-              <span className="text-slate-400">Press Enter to send — 5 agents analyze in parallel.</span>
-            )}
+          <p className="text-[11px] text-slate-400 mt-2 text-center">
+            Press Enter to send — 5 agents analyze in parallel.
           </p>
         </div>
       </div>
