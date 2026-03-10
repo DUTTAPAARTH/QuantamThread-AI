@@ -47,12 +47,17 @@ function CodeAssistant() {
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Pre-warm backend and show status
+  // Pre-warm backend and show status — keep retrying until server responds
   useEffect(() => {
     setServerStatus("warming");
-    fetchHealth()
-      .then(() => setServerStatus("online"))
-      .catch(() => setServerStatus("online")); // retry logic in api.js handles the actual warmup
+    const ping = () =>
+      fetchHealth()
+        .then(() => setServerStatus("online"))
+        .catch(() => {
+          // Server still waking — try again in 5s
+          setTimeout(ping, 5000);
+        });
+    ping();
   }, []);
 
   const scrollToBottom = () => {
@@ -65,7 +70,7 @@ function CodeAssistant() {
 
   const handleSubmit = async (text) => {
     const input = (text || prompt).trim();
-    if (!input || loading) return;
+    if (!input || loading || serverStatus === "warming") return;
 
     const userMsg = { role: "user", content: input, timestamp: new Date().toISOString() };
     setMessages((prev) => [...prev, userMsg]);
@@ -165,8 +170,9 @@ function CodeAssistant() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.04 }}
-                  onClick={() => handleSubmit(s.prompt)}
-                  className="group flex flex-col items-center gap-2 p-4 rounded-xl border border-white/[0.06] hover:border-indigo-500/30 transition-all text-center"
+                  onClick={() => serverStatus !== "warming" && handleSubmit(s.prompt)}
+                  disabled={serverStatus === "warming"}
+                  className={`group flex flex-col items-center gap-2 p-4 rounded-xl border border-white/[0.06] transition-all text-center ${serverStatus === "warming" ? "opacity-50 cursor-not-allowed" : "hover:border-indigo-500/30 cursor-pointer"}`}
                   style={{ ...glass, boxShadow: glowShadow }}
                 >
                   <Icon name={s.icon} className="text-2xl text-slate-500 group-hover:text-indigo-400 transition-colors" />
@@ -318,15 +324,29 @@ function CodeAssistant() {
             </div>
             <button
               onClick={() => handleSubmit()}
-              disabled={loading || !prompt.trim()}
-              className="shrink-0 w-11 h-11 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 text-white rounded-xl flex items-center justify-center transition-colors shadow-sm"
+              disabled={loading || !prompt.trim() || serverStatus === "warming"}
+              className="shrink-0 w-11 h-11 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 disabled:opacity-60 text-white rounded-xl flex items-center justify-center transition-colors shadow-sm"
               style={{ boxShadow: "0 0 12px rgba(99,102,241,0.3)" }}
             >
-              <Icon name="send" className="text-xl" />
+              {serverStatus === "warming" ? (
+                <motion.span
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+                  className="material-symbols-outlined text-xl"
+                >
+                  progress_activity
+                </motion.span>
+              ) : (
+                <Icon name="send" className="text-xl" />
+              )}
             </button>
           </div>
-          <p className="text-[11px] text-slate-400 mt-2 text-center">
-            Press Enter to send. 5 agents (Architecture, Bug Detection, Security, Performance, Tutor) analyze in parallel.
+          <p className="text-[11px] mt-2 text-center">
+            {serverStatus === "warming" ? (
+              <span className="text-amber-400">AI server is starting up… please wait (~30s)</span>
+            ) : (
+              <span className="text-slate-400">Press Enter to send — 5 agents analyze in parallel.</span>
+            )}
           </p>
         </div>
       </div>
