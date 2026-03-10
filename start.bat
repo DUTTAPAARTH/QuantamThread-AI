@@ -18,6 +18,7 @@ if not exist "node_modules" (
 )
 
 echo [2/5] Building frontend...
+set VITE_API_BASE=http://localhost:3001
 call npm run build
 echo.
 

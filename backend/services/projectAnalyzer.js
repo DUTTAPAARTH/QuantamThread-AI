@@ -300,38 +300,95 @@ Create edges that reflect real imports, data flow, and dependencies in the code.
     console.error("📊 [Analyzer] AI architecture generation failed:", err.message);
   }
 
-  // Fallback: if AI didn't produce valid nodes, build from modules
+  // Fallback: if AI didn't produce valid nodes, build from **actual code analysis**
   if (!archNodes.length && moduleList.length > 0) {
-    const spacing = 250;
+    console.log("📊 [Analyzer] AI arch failed — building from code analysis fallback");
+    const spacing = 200;
     const cols = Math.ceil(Math.sqrt(moduleList.length));
-    archNodes = moduleList.map((m, i) => ({
-      id: `node-${i}`,
-      label: m.name,
-      risk: m.risk_level || "low",
-      risk_score: m.risk_score || 0,
-      load: m.bug_count || 0,
-      x: (i % cols) * spacing + 100,
-      y: Math.floor(i / cols) * spacing + 100,
-    }));
-    // Fallback edges: chain modules sequentially + connect deps
+
+    // Estimate risk from file sizes and code patterns in each module
+    archNodes = moduleList.map((m, i) => {
+      const modFiles = moduleGroups[m.name] || [];
+      const totalSize = modFiles.reduce((s, f) => s + f.size, 0);
+      const totalLines = modFiles.reduce((s, f) => s + f.content.split("\n").length, 0);
+      // Heuristic risk: larger/complex modules = higher risk
+      const sizeRisk = Math.min(100, Math.round((totalSize / 5000) * 30));
+      const lineRisk = Math.min(100, Math.round((totalLines / 500) * 25));
+      const codePatternRisk = modFiles.some(f =>
+        /catch\s*\(|throw\s|TODO|FIXME|HACK|unsafe|eval\(|exec\(/i.test(f.content)
+      ) ? 20 : 0;
+      const riskScore = Math.min(100, sizeRisk + lineRisk + codePatternRisk);
+      const risk = riskScore >= 60 ? "high" : riskScore >= 30 ? "medium" : "low";
+
+      return {
+        id: `node-${i}`,
+        label: m.name,
+        risk,
+        risk_score: riskScore,
+        load: Math.min(100, Math.round(totalLines / 10)),
+        x: (i % cols) * spacing + 100,
+        y: Math.floor(i / cols) * spacing + 100,
+      };
+    });
+
+    // Build edges by scanning actual import/require statements across modules
     archEdges = [];
     let eIdx = 0;
-    for (let i = 0; i < archNodes.length - 1; i++) {
-      archEdges.push({ id: `edge-${eIdx++}`, source: archNodes[i].id, target: archNodes[i + 1].id, animated: false });
+    const modNameToIdx = {};
+    moduleList.forEach((m, i) => { modNameToIdx[m.name] = i; });
+
+    for (const [modName, modFiles] of Object.entries(moduleGroups)) {
+      const srcIdx = modNameToIdx[modName];
+      if (srcIdx === undefined) continue;
+      for (const f of modFiles) {
+        // Scan for import/require patterns that reference other modules
+        const importMatches = f.content.match(/(?:import\s+.*from\s+['"]|require\s*\(\s*['"])(\.\.?\/[^'"]+)/g) || [];
+        for (const imp of importMatches) {
+          const pathMatch = imp.match(/['"]\.\.?\/([^'"]+)/);
+          if (!pathMatch) continue;
+          const importedPath = pathMatch[1];
+          // Match against other module names
+          for (const [otherMod, otherIdx] of Object.entries(modNameToIdx)) {
+            if (otherIdx !== srcIdx && importedPath.toLowerCase().includes(otherMod.toLowerCase())) {
+              const edgeKey = `${srcIdx}->${otherIdx}`;
+              if (!archEdges.some(e => e._key === edgeKey)) {
+                const isHighRisk = archNodes[srcIdx].risk === "high" || archNodes[otherIdx].risk === "high";
+                archEdges.push({ id: `edge-${eIdx++}`, source: `node-${srcIdx}`, target: `node-${otherIdx}`, animated: isHighRisk, _key: edgeKey });
+              }
+            }
+          }
+        }
+      }
     }
+
+    // Also add edges from dependency data if available
     for (const dep of depList) {
       const directDeps = JSON.parse(dep.direct_deps || "[]");
       const srcIdx = moduleList.findIndex((m) => m.name === dep.module);
       for (const tgt of directDeps) {
         const tgtIdx = moduleList.findIndex((m) => m.name === tgt);
         if (srcIdx >= 0 && tgtIdx >= 0 && srcIdx !== tgtIdx) {
-          const eid = `edge-${eIdx++}`;
-          if (!archEdges.some((e) => e.source === `node-${srcIdx}` && e.target === `node-${tgtIdx}`)) {
-            archEdges.push({ id: eid, source: `node-${srcIdx}`, target: `node-${tgtIdx}`, animated: false });
+          const edgeKey = `${srcIdx}->${tgtIdx}`;
+          if (!archEdges.some((e) => e._key === edgeKey)) {
+            archEdges.push({ id: `edge-${eIdx++}`, source: `node-${srcIdx}`, target: `node-${tgtIdx}`, animated: false, _key: edgeKey });
           }
         }
       }
     }
+
+    // If still no edges (e.g. Java packages), ensure every node connects by proximity
+    if (archEdges.length === 0 && archNodes.length > 1) {
+      for (let i = 0; i < archNodes.length - 1; i++) {
+        archEdges.push({ id: `edge-${eIdx++}`, source: archNodes[i].id, target: archNodes[i + 1].id, animated: false });
+      }
+      // Connect last to first if 3+ nodes for a richer graph
+      if (archNodes.length >= 3) {
+        archEdges.push({ id: `edge-${eIdx++}`, source: archNodes[archNodes.length - 1].id, target: archNodes[0].id, animated: false });
+      }
+    }
+
+    // Clean internal _key before insert
+    archEdges = archEdges.map(({ _key, ...e }) => e);
   }
 
   // Insert nodes

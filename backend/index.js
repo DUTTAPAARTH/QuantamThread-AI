@@ -1,5 +1,4 @@
 require("dotenv").config();
-const serverless = require("serverless-http");
 const express = require("express");
 const cors = require("cors");
 const { initializeDatabase, dbGet } = require("./db");
@@ -16,6 +15,11 @@ const PORT = process.env.PORT || 3001;
 // ── Middleware ──────────────────────────────────────────
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
+// ── Root ───────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.json({ status: "ok", service: "QuantumThread AI Backend" });
+});
 
 // ── Health check ───────────────────────────────────────
 app.get("/health", (req, res) => {
