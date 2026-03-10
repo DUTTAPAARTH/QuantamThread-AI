@@ -15,13 +15,20 @@ const PORT = process.env.PORT || 3001;
 // ── Middleware ──────────────────────────────────────────
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
-  : ["http://localhost:5173", "https://testing.d1r055b08h2njg.amplifyapp.com"];
+  : [];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow server-to-server requests (no origin) and listed origins
-      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      // Allow all amplifyapp.com subdomains, localhost, and any explicitly listed origins
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        /\.amplifyapp\.com$/.test(origin) ||
+        /^http:\/\/localhost(:\d+)?$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
       callback(new Error(`CORS: origin ${origin} not allowed`));
     },
     credentials: true,
