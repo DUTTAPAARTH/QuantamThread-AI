@@ -18,6 +18,11 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
 # Logs
 *.log
 npm-debug.log*
