@@ -1,19 +1,7 @@
 const express = require("express");
 const { dbRun, dbAll } = require("../db");
 const { runAgentsGlobal } = require("../orchestrator");
-const { callBedrock } = require("../services/bedrockClient");
-
 const router = express.Router();
-
-// Debug endpoint — test Bedrock directly
-router.get("/test-bedrock", async (req, res) => {
-  try {
-    const reply = await callBedrock("say hello");
-    res.json({ ok: true, reply });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
 
 /**
  * POST /code/generate
