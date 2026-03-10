@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { queryAgents, fetchHealth } from "../api";
 
 const darkBg  = "#0B0F1A";
 const cardBg  = "rgba(26,31,46,0.6)";
@@ -42,8 +43,17 @@ function CodeAssistant() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState({});
+  const [serverStatus, setServerStatus] = useState("unknown"); // "unknown" | "online" | "warming"
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+
+  // Pre-warm backend and show status
+  useEffect(() => {
+    setServerStatus("warming");
+    fetchHealth()
+      .then(() => setServerStatus("online"))
+      .catch(() => setServerStatus("online")); // retry logic in api.js handles the actual warmup
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -63,13 +73,8 @@ function CodeAssistant() {
     setLoading(true);
 
     try {
-      const res = await fetch("/code/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: input }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Request failed");
+      const data = await queryAgents(input);
+      if (!data.agents) throw new Error("Invalid response from server");
 
       const aiMsg = {
         role: "assistant",
@@ -120,6 +125,20 @@ function CodeAssistant() {
                 <br />
                 <span className="text-slate-400 text-xs">5 specialized agents analyze every query in parallel.</span>
               </p>
+              {serverStatus === "warming" && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="inline-flex items-center gap-2 mt-3 px-3 py-1.5 rounded-full text-xs font-medium bg-amber-500/10 border border-amber-500/30 text-amber-400"
+                >
+                  <motion.span
+                    animate={{ opacity: [1, 0.3, 1] }}
+                    transition={{ duration: 1.2, repeat: Infinity }}
+                    className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"
+                  />
+                  AI server starting up — first response may take ~30s
+                </motion.div>
+              )}
             </div>
 
             {/* Agent badges */}

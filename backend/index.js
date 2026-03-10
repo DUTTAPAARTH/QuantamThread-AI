@@ -13,7 +13,27 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ── Middleware ──────────────────────────────────────────
-app.use(cors());
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+  : [];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow all amplifyapp.com subdomains, localhost, and any explicitly listed origins
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        /\.amplifyapp\.com$/.test(origin) ||
+        /^http:\/\/localhost(:\d+)?$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
+      callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: '50mb' }));
 
 // ── Root ───────────────────────────────────────────────
@@ -52,7 +72,7 @@ app.use((req, res, next) => {
 // ── Error handler ──────────────────────────────────────
 app.use((err, req, res, _next) => {
   console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Internal server error" });
+  res.status(500).json({ error: err.message || "Internal server error" });
 });
 
 // ── Start server ───────────────────────────────────────
