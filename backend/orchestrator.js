@@ -113,8 +113,36 @@ async function runAgentsWithContext(projectId, userQuery) {
   return results;
 }
 
+/**
+ * Run all agents in Global AI mode, calling onAgent(result) as each one completes.
+ * Agents queue through the Bedrock client (MAX_CONCURRENT=1) so they arrive one by one.
+ *
+ * @param {string} userQuery
+ * @param {function} onAgent - called with { agent, reply, confidence } for each agent
+ */
+async function runAgentsGlobalStream(userQuery, onAgent) {
+  console.log(`🧠 Orchestrator [STREAM MODE]: dispatching to ${agents.length} agents...`);
+
+  await Promise.all(
+    agents.map(({ name, module }) =>
+      module.analyze(null, userQuery)
+        .then((result) => {
+          console.log(`  ✔ ${name} agent responded (confidence: ${result.confidence})`);
+          onAgent({ agent: result.agent, reply: result.reply, confidence: result.confidence });
+        })
+        .catch((err) => {
+          console.error(`  ✖ ${name} agent failed:`, err.message);
+          onAgent({ agent: name, reply: `Agent "${name}" encountered an error: ${err.message}`, confidence: 0 });
+        })
+    )
+  );
+
+  console.log(`🧠 Orchestrator [STREAM MODE]: all agents complete`);
+}
+
 module.exports = {
   runAgentsGlobal,
+  runAgentsGlobalStream,
   runAgentsWithContext,
   agentNames: agents.map((a) => a.name),
 };

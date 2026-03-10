@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { queryAgents } from "../api";
+import { queryAgentsStream } from "../api";
 
 
 const darkBg  = "#0B0F1A";
@@ -39,6 +39,39 @@ const agentConfig = {
   tutor: { icon: "school", label: "Tutor Agent", color: "text-violet-400", bg: "bg-violet-500/15", border: "border-violet-500/30", accent: "bg-violet-600" },
 };
 
+/**
+ * Typewriter animation — reveals text progressively, like GPT streaming.
+ * Only animates when first mounted with text. Skips animation for historical messages.
+ */
+function TypewriterText({ text, animate }) {
+  const chunkSize = Math.max(1, Math.floor(text.length / 200));
+  const [displayed, setDisplayed] = useState(animate ? "" : text);
+  const [done, setDone] = useState(!animate);
+
+  useEffect(() => {
+    if (!text || !animate) return;
+    setDisplayed("");
+    setDone(false);
+    let idx = 0;
+    const id = setInterval(() => {
+      idx = Math.min(idx + chunkSize, text.length);
+      setDisplayed(text.slice(0, idx));
+      if (idx >= text.length) { clearInterval(id); setDone(true); }
+    }, 10);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text]);
+
+  return (
+    <span className="whitespace-pre-wrap">
+      {displayed}
+      {!done && (
+        <span className="inline-block w-px h-[1em] bg-slate-300 ml-0.5 align-text-bottom animate-pulse" />
+      )}
+    </span>
+  );
+}
+
 function CodeAssistant() {
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState([]);
@@ -47,6 +80,8 @@ function CodeAssistant() {
   const [loadingStatus, setLoadingStatus] = useState("");
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  const streamController = useRef(null);
+  const agentCountRef = useRef(0);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -56,44 +91,76 @@ function CodeAssistant() {
     scrollToBottom();
   }, [messages]);
 
-  const handleSubmit = async (text) => {
+  const handleSubmit = (text) => {
     const input = (text || prompt).trim();
     if (!input || loading) return;
 
     const userMsg = { role: "user", content: input, timestamp: new Date().toISOString() };
-    setMessages((prev) => [...prev, userMsg]);
+    // Add user message + empty streaming assistant placeholder
+    setMessages((prev) => [
+      ...prev,
+      userMsg,
+      { role: "assistant", agents: [], streaming: true, timestamp: new Date().toISOString() },
+    ]);
     setPrompt("");
     setLoading(true);
-    setLoadingStatus("Analyzing with 5 agents...");
+    agentCountRef.current = 0;
+    setLoadingStatus("Agents analyzing...");
 
-    // Show a hint if it's taking long (server may be waking up)
-    const slowTimer = setTimeout(() => setLoadingStatus("Waking up server — this takes up to 30s..."), 8000);
+    const slowTimer = setTimeout(
+      () => setLoadingStatus("Waking up server — this takes up to 30s..."),
+      8000
+    );
 
-    try {
-      const data = await queryAgents(input);
-      clearTimeout(slowTimer);
-      if (!data.agents) throw new Error("Invalid response from server");
+    const ctrl = queryAgentsStream(
+      input,
+      // onAgent — called for each agent as it finishes
+      (agentResult) => {
+        clearTimeout(slowTimer);
+        agentCountRef.current += 1;
+        setLoadingStatus(`${agentCountRef.current} / 5 agents analyzed...`);
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.role === "assistant" && last.streaming) {
+            next[next.length - 1] = { ...last, agents: [...last.agents, agentResult] };
+          }
+          return next;
+        });
+      },
+      // onDone — all agents complete
+      () => {
+        clearTimeout(slowTimer);
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.role === "assistant") {
+            next[next.length - 1] = { ...last, streaming: false };
+          }
+          return next;
+        });
+        setLoading(false);
+        setLoadingStatus("");
+        inputRef.current?.focus();
+      },
+      // onError
+      (err) => {
+        clearTimeout(slowTimer);
+        const msg =
+          err.message === "Failed to fetch" || err.name === "AbortError"
+            ? "Could not reach the server. It may be starting up — please try again in a moment."
+            : err.message;
+        setMessages((prev) => {
+          // Replace the empty streaming placeholder with an error
+          const next = prev.filter((m) => !(m.role === "assistant" && m.streaming));
+          return [...next, { role: "error", content: msg, timestamp: new Date().toISOString() }];
+        });
+        setLoading(false);
+        setLoadingStatus("");
+      }
+    );
 
-      const aiMsg = {
-        role: "assistant",
-        agents: data.agents || [],
-        timestamp: data.timestamp,
-      };
-      setMessages((prev) => [...prev, aiMsg]);
-    } catch (err) {
-      clearTimeout(slowTimer);
-      const msg = err.name === "AbortError" || err.message === "Failed to fetch"
-        ? "Could not reach the server. It may be starting up — please try again in a moment."
-        : err.message;
-      setMessages((prev) => [
-        ...prev,
-        { role: "error", content: msg, timestamp: new Date().toISOString() },
-      ]);
-    } finally {
-      setLoading(false);
-      setLoadingStatus("");
-      inputRef.current?.focus();
-    }
+    streamController.current = ctrl;
   };
 
   const toggleAgent = (msgIdx, agentName) => {
@@ -203,6 +270,8 @@ function CodeAssistant() {
                         const cfg = agentConfig[agent.agent] || {};
                         const key = `${idx}-${agent.agent}`;
                         const isCollapsed = collapsed[key];
+                        // animate text only for messages that were streamed in this session
+                        const animateText = msg.streaming !== undefined;
 
                         return (
                           <motion.div
@@ -247,7 +316,9 @@ function CodeAssistant() {
                                   className="overflow-hidden"
                                 >
                                   <div className="px-4 py-3 border-t border-white/[0.04]">
-                                    <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{agent.reply}</p>
+                                    <p className="text-sm text-slate-300 leading-relaxed">
+                                      <TypewriterText text={agent.reply} animate={animateText} />
+                                    </p>
                                   </div>
                                 </motion.div>
                               )}
