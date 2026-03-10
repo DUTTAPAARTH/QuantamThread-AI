@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { fetchProjects, uploadProject, importGithub, fetchProjectStatus, deleteProject, reanalyzeProject } from "../api";
+import { fetchProjects, uploadProject, importGithub, fetchProjectStatus, deleteProject, reanalyzeProject, sendChat } from "../api";
 import useIntelligenceStore from "../store/intelligence.store";
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -703,15 +703,7 @@ function ProjectChatPanel({ selectedProject }) {
     setLoading(true);
 
     try {
-      const body = { message: input };
-      if (selectedProject?.id) body.project_id = selectedProject.id;
-      const res = await fetch("/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Request failed");
+      const data = await sendChat(input, selectedProject?.id || null);
       const agents = (data.responses || []).map((r) => ({
         agent: r.agent,
         reply: r.reply,

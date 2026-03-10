@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { queryAgents } from "../api";
 
 const darkBg  = "#0B0F1A";
 const cardBg  = "rgba(26,31,46,0.6)";
@@ -63,13 +64,8 @@ function CodeAssistant() {
     setLoading(true);
 
     try {
-      const res = await fetch("/code/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: input }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Request failed");
+      const data = await queryAgents(input);
+      if (!data.agents) throw new Error("Invalid response from server");
 
       const aiMsg = {
         role: "assistant",
