@@ -141,7 +141,7 @@ function CodeAssistant() {
                     transition={{ duration: 1.2, repeat: Infinity }}
                     className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block"
                   />
-                  AI server starting up — first response may take ~30s
+                  AI server is starting up — please wait (up to 60s on first load)
                 </motion.div>
               )}
             </div>
@@ -343,7 +343,7 @@ function CodeAssistant() {
           </div>
           <p className="text-[11px] mt-2 text-center">
             {serverStatus === "warming" ? (
-              <span className="text-amber-400">AI server is starting up… please wait (~30s)</span>
+              <span className="text-amber-400">AI server is starting up… please wait (can take up to 60s on first load)</span>
             ) : (
               <span className="text-slate-400">Press Enter to send — 5 agents analyze in parallel.</span>
             )}
