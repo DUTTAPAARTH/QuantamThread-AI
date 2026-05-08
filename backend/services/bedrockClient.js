@@ -1,89 +1,66 @@
 /**
- * Bedrock Client – Calls Amazon Bedrock via the Converse API.
- * Uses @aws-sdk/client-bedrock-runtime with AWS Signature V4 auth.
- * Includes a concurrency-limited request queue to avoid throttling.
+ * AI Client – Powered by Anthropic Claude.
+ * Drop-in replacement for the old Bedrock/Llama3 client.
+ * All agents call callBedrock() — no changes needed elsewhere.
+ *
+ * Models (set CLAUDE_MODEL in .env):
+ *   claude-haiku-4-5        – Fastest, cheapest (default)
+ *   claude-sonnet-4-5       – Balanced speed & quality
+ *   claude-opus-4-5         – Most capable
  */
 
 require("dotenv").config();
-const { BedrockRuntimeClient, ConverseCommand } = require("@aws-sdk/client-bedrock-runtime");
+const Anthropic = require("@anthropic-ai/sdk");
 
-const REGION = process.env.AWS_REGION || "us-east-1";
-const MODEL = process.env.BEDROCK_MODEL || "meta.llama3-70b-instruct-v1:0";
+const MODEL = process.env.CLAUDE_MODEL || "claude-haiku-4-5";
+const MAX_TOKENS = 1024;
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 1000;
 
-const MAX_RETRIES = 6;
-const BASE_DELAY_MS = 5000;
-const MAX_CONCURRENT = 1;
-const INTER_REQUEST_DELAY_MS = 2000;
-
-const client = new BedrockRuntimeClient({ region: REGION });
+const client = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Concurrency-limited queue
-let activeCount = 0;
-const waiting = [];
-
-function enqueue(fn) {
-  return new Promise((resolve, reject) => {
-    const run = async () => {
-      activeCount++;
-      try {
-        resolve(await fn());
-      } catch (e) {
-        reject(e);
-      } finally {
-        activeCount--;
-        await sleep(INTER_REQUEST_DELAY_MS);
-        if (waiting.length > 0) waiting.shift()();
-      }
-    };
-    if (activeCount < MAX_CONCURRENT) {
-      run();
-    } else {
-      waiting.push(run);
-    }
-  });
-}
-
+/**
+ * Main function — drop-in replacement for the old callBedrock().
+ * Accepts a prompt string and optional opts { max_gen_len }.
+ */
 async function callBedrock(prompt, opts = {}) {
-  return enqueue(() => _callBedrockInner(prompt, opts));
-}
+  const maxTokens = opts.max_gen_len || MAX_TOKENS;
 
-async function _callBedrockInner(prompt, opts = {}) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
       const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
-      console.log(`[BedrockClient] Throttled — retry ${attempt}/${MAX_RETRIES} in ${delay}ms`);
+      console.log(`[ClaudeClient] Rate limited — retry ${attempt}/${MAX_RETRIES} in ${delay}ms`);
       await sleep(delay);
     }
 
-    console.log(`[BedrockClient] Calling model: ${MODEL} (attempt ${attempt + 1})`);
+    console.log(`[ClaudeClient] Calling ${MODEL} (attempt ${attempt + 1})`);
 
     try {
-      const command = new ConverseCommand({
-        modelId: MODEL,
-        messages: [{ role: "user", content: [{ text: prompt }] }],
-        inferenceConfig: {
-          maxTokens: opts.max_gen_len || 1024,
-          temperature: 0.7,
-          topP: 0.9,
-        },
+      const response = await client.messages.create({
+        model: MODEL,
+        max_tokens: maxTokens,
+        messages: [{ role: "user", content: prompt }],
       });
 
-      const response = await client.send(command);
-      const generatedText = response.output?.message?.content?.[0]?.text || "No response from model.";
-      console.log(`[BedrockClient] Response received (${generatedText.length} chars)`);
-      return generatedText.trim();
+      const text = response.content?.[0]?.text || "No response from Claude.";
+      console.log(`[ClaudeClient] Response received (${text.length} chars)`);
+      return text.trim();
     } catch (err) {
-      const isThrottle =
-        err.name === "ThrottlingException" ||
-        err.$metadata?.httpStatusCode === 429 ||
-        (err.message && err.message.toLowerCase().includes("too many requests"));
-      if (isThrottle && attempt < MAX_RETRIES) continue;
-      console.error(`[BedrockClient] Error: ${err.message}`);
-      throw new Error(`Bedrock error: ${err.message}`);
+      const isRateLimit =
+        err.status === 429 ||
+        err.name === "RateLimitError" ||
+        (err.message && err.message.toLowerCase().includes("rate limit"));
+
+      if (isRateLimit && attempt < MAX_RETRIES) continue;
+
+      console.error(`[ClaudeClient] Error: ${err.message}`);
+      throw new Error(`Claude error: ${err.message}`);
     }
   }
 }

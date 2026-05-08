@@ -55,6 +55,30 @@ const defaultRepoConfig = {
   edges: [],
 };
 
+// Defined outside component so ReactFlow always gets a stable reference (prevents error#002)
+const NODE_TYPES = { depthBadgeNode: DepthBadgeNode };
+
+// Stable options objects — must be outside component to avoid ReactFlow error#002
+const DEFAULT_EDGE_OPTIONS = {
+  type: "smoothstep",
+  style: {
+    stroke: "rgba(139,92,246,0.6)",
+    strokeWidth: 2,
+  },
+};
+
+// Stable callbacks — inline functions/objects passed to ReactFlow trigger error#002
+const MINIMAP_NODE_COLOR = (node) => {
+  switch (node.data.risk) {
+    case "high":   return "#ef4444";
+    case "medium": return "#eab308";
+    case "low":    return "#10b981";
+    default:       return "#94a3b8";
+  }
+};
+const MINIMAP_MASK_COLOR = "rgba(13, 17, 23, 0.8)";
+const RF_BG_STYLE = { background: "rgba(13,17,23,0.5)" };
+
 function ArchitectureMap() {
   const { selectedProject } = useOutletContext();
   const selectedRepository = selectedProject?.name || "";
@@ -79,17 +103,65 @@ function ArchitectureMap() {
       try {
         const data = await fetchArchitecture(selectedRepository);
         if (!cancelled) {
-          // Data already in ReactFlow format: { id, position: {x,y}, data: {label,risk,load,riskScore} }
           const formattedNodes = (data.nodes || []).map((n) => ({
             ...n,
             id: String(n.id),
           }));
-          const formattedEdges = (data.edges || []).map((e) => ({
+
+          let formattedEdges = (data.edges || []).map((e) => ({
             ...e,
             type: "smoothstep",
             animated: e.animated === true || e.animated === 1,
             style: { stroke: e.style?.stroke || "#cbd5e1", strokeWidth: e.style?.strokeWidth || 2 },
           }));
+
+          // If the DB has no edges yet, synthesise a connected graph from the nodes
+          // so the Architecture Map is never shown blank for existing projects.
+          if (formattedEdges.length === 0 && formattedNodes.length > 1) {
+            const syntheticEdges = [];
+            const defaultStyle = { stroke: "rgba(99,102,241,0.35)", strokeWidth: 1.5 };
+            // Linear chain connecting adjacent nodes
+            for (let i = 0; i < formattedNodes.length - 1; i++) {
+              syntheticEdges.push({
+                id: `synthetic-edge-${i}`,
+                source: formattedNodes[i].id,
+                target: formattedNodes[i + 1].id,
+                type: "smoothstep",
+                animated: false,
+                style: defaultStyle,
+              });
+            }
+            // Add cross-links for richer topology on 4+ node graphs
+            if (formattedNodes.length >= 4) {
+              const mid = Math.floor(formattedNodes.length / 2);
+              syntheticEdges.push({
+                id: `synthetic-edge-cross-0`,
+                source: formattedNodes[0].id,
+                target: formattedNodes[mid].id,
+                type: "smoothstep",
+                animated: false,
+                style: defaultStyle,
+              });
+              syntheticEdges.push({
+                id: `synthetic-edge-cross-1`,
+                source: formattedNodes[mid].id,
+                target: formattedNodes[formattedNodes.length - 1].id,
+                type: "smoothstep",
+                animated: false,
+                style: defaultStyle,
+              });
+            }
+            formattedEdges = syntheticEdges;
+          }
+
+          // Deduplicate by ID — guards against StrictMode double-invocation
+          const seenEdgeIds = new Set();
+          formattedEdges = formattedEdges.filter((e) => {
+            if (seenEdgeIds.has(e.id)) return false;
+            seenEdgeIds.add(e.id);
+            return true;
+          });
+
           setArchNodes(formattedNodes);
           setArchEdges(formattedEdges);
         }
@@ -127,15 +199,15 @@ function ArchitectureMap() {
 
   const [nodes, setNodes, onNodesChange] = useNodesState(archNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(archEdges);
-  const nodeTypes = useMemo(() => ({ depthBadgeNode: DepthBadgeNode }), []);
 
   // Update ReactFlow nodes/edges when architecture data loads
   useEffect(() => {
-    if (archNodes.length > 0) {
+    if (archNodes.length > 0 || archEdges.length > 0) {
       setNodes(archNodes);
       setEdges(archEdges);
     }
   }, [archNodes, archEdges, setNodes, setEdges]);
+
 
   // Update node risk scores when version changes
   useEffect(() => {
@@ -153,12 +225,7 @@ function ArchitectureMap() {
     }
   }, [selectedVersion, selectedRepository, setNodes]);
 
-  useEffect(() => {
-    console.log("ArchitectureMap edges:", edges);
-    if (!edges || edges.length === 0) {
-      console.warn("ArchitectureMap edges array is empty");
-    }
-  }, [edges]);
+
 
   // Style nodes based on risk level and selection
   const getHeatmapColor = useCallback((riskScore) => {
@@ -308,9 +375,14 @@ function ArchitectureMap() {
       const connectedToHighRisk =
         highRiskNodeIds.has(edge.source) || highRiskNodeIds.has(edge.target);
 
-      const strokeColor =
-        heatmapEnabled && connectedToHighRisk ? "rgba(99,102,241,0.5)" : "rgba(99,102,241,0.3)";
-      const strokeWidth = heatmapEnabled && connectedToHighRisk ? 1.9 : 1.5;
+      // Solid, visible stroke — animated edges get a brighter accent colour
+      const strokeColor = edge.animated
+        ? "#a78bfa"                                          // violet for animated/high-risk
+        : connectedToHighRisk && heatmapEnabled
+          ? "rgba(139,92,246,0.85)"                         // bright purple when heatmap on
+          : "rgba(139,92,246,0.6)";                         // default: visible indigo-violet
+
+      const strokeWidth = connectedToHighRisk && heatmapEnabled ? 2.5 : 2;
 
       return {
         ...edge,
@@ -319,7 +391,6 @@ function ArchitectureMap() {
           ...(edge.style || {}),
           stroke: strokeColor,
           strokeWidth,
-          strokeDasharray: "4 4",
           opacity: 1,
           transition: "stroke 0.2s ease, stroke-width 0.2s ease",
         },
@@ -509,15 +580,16 @@ function ArchitectureMap() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, delay: 0.1 }}
         className="flex-1 p-8 min-h-0 relative"
+        style={{ minHeight: 0 }}
       >
         <div
-          className="h-full border border-white/[0.06] rounded-xl overflow-hidden relative"
-          style={{ ...glass, boxShadow: glowShadow }}
+          className="border border-white/[0.06] rounded-xl overflow-hidden relative"
+          style={{ ...glass, boxShadow: glowShadow, width: "100%", height: "100%", position: "absolute", inset: "2rem" }}
         >
           <ReactFlow
             nodes={styledNodes}
             edges={styledEdges}
-            nodeTypes={nodeTypes}
+            nodeTypes={NODE_TYPES}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeDragStop={onNodeDragStop}
@@ -533,16 +605,9 @@ function ArchitectureMap() {
             panOnScroll={false}
             minZoom={0.3}
             maxZoom={2.5}
-            defaultEdgeOptions={{
-              type: "smoothstep",
-              style: {
-                stroke: "rgba(99,102,241,0.3)",
-                strokeWidth: 1.5,
-                strokeDasharray: "4 4",
-              },
-            }}
+            defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
             className="relative z-0"
-            style={{ background: "rgba(13,17,23,0.5)" }}
+            style={RF_BG_STYLE}
           >
             <Background
               gap={20}
@@ -553,24 +618,11 @@ function ArchitectureMap() {
             <Controls
               showInteractive={false}
               className="rounded-lg"
-              style={{ ...glass, border: "1px solid rgba(255,255,255,0.06)" }}
             />
             <MiniMap
-              nodeColor={(node) => {
-                switch (node.data.risk) {
-                  case "high":
-                    return "#ef4444";
-                  case "medium":
-                    return "#eab308";
-                  case "low":
-                    return "#10b981";
-                  default:
-                    return "#94a3b8";
-                }
-              }}
-              maskColor="rgba(13, 17, 23, 0.8)"
+              nodeColor={MINIMAP_NODE_COLOR}
+              maskColor={MINIMAP_MASK_COLOR}
               className="rounded-lg"
-              style={{ ...glass, border: "1px solid rgba(255,255,255,0.06)" }}
             />
           </ReactFlow>
 

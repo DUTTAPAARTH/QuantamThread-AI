@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Project Analyzer — Scans uploaded project files and populates
  * intelligence DB tables using AI agents.
  */
@@ -287,7 +287,7 @@ Create edges that reflect real imports, data flow, and dependencies in the code.
   let archEdges = [];
 
   try {
-    const archResult = await callBedrock(archPrompt, { max_gen_len: 1024 });
+    const archResult = await callBedrock(archPrompt, { max_gen_len: 2048 });
     const archData = parseJsonFromAI(archResult);
 
     if (archData && !Array.isArray(archData) && archData.nodes) {
@@ -377,20 +377,31 @@ Create edges that reflect real imports, data flow, and dependencies in the code.
       }
     }
 
-    // If still no edges (e.g. Java packages), ensure every node connects by proximity
-    if (archEdges.length === 0 && archNodes.length > 1) {
+    // Guarantee edges - if fewer than 1 edge per 2 nodes, add proximity chain
+    // so Architecture Map is never blank even when import scanning finds nothing.
+    const minExpectedEdges = Math.max(1, Math.floor(archNodes.length / 2));
+    if (archEdges.length < minExpectedEdges && archNodes.length > 1) {
+      console.log('[Analyzer] Only ' + archEdges.length + ' edges - adding proximity-chain edges');
+      const existingPairs = new Set(archEdges.map(e => e.source + '->' + e.target));
       for (let i = 0; i < archNodes.length - 1; i++) {
-        archEdges.push({ id: `edge-${eIdx++}`, source: archNodes[i].id, target: archNodes[i + 1].id, animated: false });
+        const pair = archNodes[i].id + '->' + archNodes[i + 1].id;
+        if (!existingPairs.has(pair)) {
+          archEdges.push({ id: 'edge-' + (eIdx++), source: archNodes[i].id, target: archNodes[i + 1].id, animated: false });
+          existingPairs.add(pair);
+        }
       }
-      // Connect last to first if 3+ nodes for a richer graph
-      if (archNodes.length >= 3) {
-        archEdges.push({ id: `edge-${eIdx++}`, source: archNodes[archNodes.length - 1].id, target: archNodes[0].id, animated: false });
+      if (archNodes.length >= 4) {
+        const mid = Math.floor(archNodes.length / 2);
+        const pair = archNodes[0].id + '->' + archNodes[mid].id;
+        if (!existingPairs.has(pair)) {
+          archEdges.push({ id: 'edge-' + (eIdx++), source: archNodes[0].id, target: archNodes[mid].id, animated: false });
+        }
       }
     }
 
-    // Clean internal _key before insert
     archEdges = archEdges.map(({ _key, ...e }) => e);
   }
+
 
   // Insert nodes
   for (const n of archNodes) {

@@ -1,7 +1,7 @@
 /**
  * Tutor Agent – Provides educational explanations, code examples, and guidance.
  * Supports Global AI mode (context=null) and Project-aware mode.
- * Powered by Amazon Bedrock (Llama 3).
+ * Powered by Anthropic Claude.
  */
 
 const { callBedrock } = require("../services/bedrockClient");

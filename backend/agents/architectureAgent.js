@@ -1,7 +1,7 @@
 /**
  * Architecture Agent – Analyzes system design and architectural patterns.
  * Supports Global AI mode (context=null) and Project-aware mode.
- * Powered by Amazon Bedrock (Llama 3).
+ * Powered by Anthropic Claude.
  */
 
 const { callBedrock } = require("../services/bedrockClient");
