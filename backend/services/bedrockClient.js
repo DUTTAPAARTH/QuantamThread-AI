@@ -1,69 +1,52 @@
 /**
- * AI Client – Supports both Anthropic Claude SaaS API and AWS Bedrock Runtime.
- * Automatically falls back to AWS Bedrock if Anthropic API key is not configured.
+ * AI Client – Powered by AWS Bedrock Runtime calling Amazon Nova Lite.
  */
 
 require("dotenv").config();
 const { BedrockRuntimeClient, ConverseCommand } = require("@aws-sdk/client-bedrock-runtime");
-const Anthropic = require("@anthropic-ai/sdk");
-
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
-const isAnthropicEnabled = ANTHROPIC_KEY && 
-  !String(ANTHROPIC_KEY).includes("placeholder") && 
-  !String(ANTHROPIC_KEY).includes("your_anthropic");
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const BEDROCK_MODEL = process.env.BEDROCK_MODEL || "arn:aws:bedrock:us-east-1:857294630609:inference-profile/us.amazon.nova-lite-v1:0";
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-haiku-4-5";
 
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 
-// Initialize clients
-let anthropicClient;
-let bedrockClient;
+// Use Bedrock credentials from environment (prefer BEDROCK-specific variables)
+const accessKeyId = process.env.BEDROCK_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
+const secretAccessKey = process.env.BEDROCK_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
+const config = { region: REGION };
+if (accessKeyId && secretAccessKey) {
+  config.credentials = { accessKeyId, secretAccessKey };
+}
+const bedrockClient = new BedrockRuntimeClient(config);
 
-if (isAnthropicEnabled) {
-  anthropicClient = new Anthropic({ apiKey: ANTHROPIC_KEY });
-  console.log(`🤖 AI Engine: Anthropic Claude (model: ${CLAUDE_MODEL})`);
+// Check if we are using a Bedrock API Key (either via BEDROCK_API_KEY starting with ABSK,
+// or via accessKeyId starting with 'BedrockAPIKey-')
+let abskToken = process.env.BEDROCK_API_KEY;
+if (abskToken && !abskToken.startsWith("ABSK")) {
+  abskToken = null;
+}
+if (!abskToken && accessKeyId && accessKeyId.startsWith("BedrockAPIKey-") && secretAccessKey) {
+  abskToken = "ABSK" + Buffer.from(`${accessKeyId}:${secretAccessKey}`).toString("base64");
+}
+
+if (abskToken) {
+  console.log(`☁️  AI Engine: AWS Bedrock (model: ${BEDROCK_MODEL}, region: ${REGION}) using API Key`);
+  bedrockClient.middlewareStack.add(
+    (next, context) => async (args) => {
+      delete args.request.headers["authorization"];
+      delete args.request.headers["Authorization"];
+      args.request.headers["Authorization"] = `Bearer ${abskToken}`;
+      return next(args);
+    },
+    {
+      step: "finalizeRequest",
+      name: "bearerTokenMiddleware",
+      priority: "high"
+    }
+  );
 } else {
-  // Use Bedrock credentials from environment (prefer BEDROCK-specific variables)
-  const accessKeyId = process.env.BEDROCK_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.BEDROCK_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
-  const config = { region: REGION };
-  if (accessKeyId && secretAccessKey) {
-    config.credentials = { accessKeyId, secretAccessKey };
-  }
-  bedrockClient = new BedrockRuntimeClient(config);
-
-  // Check if we are using a Bedrock API Key (either via BEDROCK_API_KEY starting with ABSK,
-  // or via accessKeyId starting with 'BedrockAPIKey-')
-  let abskToken = process.env.BEDROCK_API_KEY;
-  if (abskToken && !abskToken.startsWith("ABSK")) {
-    abskToken = null;
-  }
-  if (!abskToken && accessKeyId && accessKeyId.startsWith("BedrockAPIKey-") && secretAccessKey) {
-    abskToken = "ABSK" + Buffer.from(`${accessKeyId}:${secretAccessKey}`).toString("base64");
-  }
-
-  if (abskToken) {
-    console.log(`☁️  AI Engine: AWS Bedrock (model: ${BEDROCK_MODEL}, region: ${REGION}) using API Key`);
-    bedrockClient.middlewareStack.add(
-      (next, context) => async (args) => {
-        delete args.request.headers["authorization"];
-        delete args.request.headers["Authorization"];
-        args.request.headers["Authorization"] = `Bearer ${abskToken}`;
-        return next(args);
-      },
-      {
-        step: "finalizeRequest",
-        name: "bearerTokenMiddleware",
-        priority: "high"
-      }
-    );
-  } else {
-    console.log(`☁️  AI Engine: AWS Bedrock (model: ${BEDROCK_MODEL}, region: ${REGION}) using IAM SigV4`);
-  }
+  console.log(`☁️  AI Engine: AWS Bedrock (model: ${BEDROCK_MODEL}, region: ${REGION}) using IAM SigV4`);
 }
 
 function sleep(ms) {
@@ -84,44 +67,25 @@ async function callBedrock(prompt, opts = {}) {
       await sleep(delay);
     }
 
+    console.log(`[BedrockClient] Calling ${BEDROCK_MODEL} (attempt ${attempt + 1})`);
+
     try {
-      if (isAnthropicEnabled) {
-        console.log(`[ClaudeClient] Calling ${CLAUDE_MODEL} (attempt ${attempt + 1})`);
-        const response = await anthropicClient.messages.create({
-          model: CLAUDE_MODEL,
-          max_tokens: maxTokens,
-          messages: [{ role: "user", content: prompt }],
-        }, {
-          timeout: 25000 // 25s timeout to prevent hanging requests
-        });
-        const text = response.content?.[0]?.text || "No response from Claude.";
-        console.log(`[ClaudeClient] Response received (${text.length} chars)`);
-        return text.trim();
-      } else {
-        console.log(`[BedrockClient] Calling ${BEDROCK_MODEL} (attempt ${attempt + 1})`);
-        const commandParams = {
-          modelId: BEDROCK_MODEL,
-          messages: [{ role: "user", content: [{ text: prompt }] }],
-          inferenceConfig: {
-            maxTokens: maxTokens,
-            temperature: 0.7,
-            topP: 0.9,
-          },
-        };
-        const isClaude = BEDROCK_MODEL.toLowerCase().includes("claude");
-        const isNova = BEDROCK_MODEL.toLowerCase().includes("nova");
-        if (isClaude || isNova) {
-          commandParams.performanceConfig = { latency: "standard" };
-        }
-        if (isClaude) {
-          commandParams.additionalModelRequestFields = { top_k: 250 };
-        }
-        const command = new ConverseCommand(commandParams);
-        const response = await bedrockClient.send(command);
-        const text = response.output?.message?.content?.[0]?.text || "No response from Bedrock.";
-        console.log(`[BedrockClient] Response received (${text.length} chars)`);
-        return text.trim();
-      }
+      const commandParams = {
+        modelId: BEDROCK_MODEL,
+        messages: [{ role: "user", content: [{ text: prompt }] }],
+        inferenceConfig: {
+          maxTokens: maxTokens,
+          temperature: 0.7,
+          topP: 0.9,
+        },
+        performanceConfig: { latency: "standard" },
+      };
+
+      const command = new ConverseCommand(commandParams);
+      const response = await bedrockClient.send(command);
+      const text = response.output?.message?.content?.[0]?.text || "No response from Bedrock.";
+      console.log(`[BedrockClient] Response received (${text.length} chars)`);
+      return text.trim();
     } catch (err) {
       const isRateLimit =
         err.status === 429 ||
