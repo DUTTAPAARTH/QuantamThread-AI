@@ -13,7 +13,7 @@ const isAnthropicEnabled = ANTHROPIC_KEY &&
   !String(ANTHROPIC_KEY).includes("your_anthropic");
 
 const REGION = process.env.AWS_REGION || "us-east-1";
-const BEDROCK_MODEL = process.env.BEDROCK_MODEL || "arn:aws:bedrock:us-east-1:857294630609:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0";
+const BEDROCK_MODEL = process.env.BEDROCK_MODEL || "arn:aws:bedrock:us-east-1:857294630609:inference-profile/us.amazon.nova-lite-v1:0";
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-haiku-4-5";
 
 const MAX_RETRIES = 3;
@@ -108,9 +108,13 @@ async function callBedrock(prompt, opts = {}) {
             topP: 0.9,
           },
         };
-        if (BEDROCK_MODEL.toLowerCase().includes("claude")) {
-          commandParams.additionalModelRequestFields = { top_k: 250 };
+        const isClaude = BEDROCK_MODEL.toLowerCase().includes("claude");
+        const isNova = BEDROCK_MODEL.toLowerCase().includes("nova");
+        if (isClaude || isNova) {
           commandParams.performanceConfig = { latency: "standard" };
+        }
+        if (isClaude) {
+          commandParams.additionalModelRequestFields = { top_k: 250 };
         }
         const command = new ConverseCommand(commandParams);
         const response = await bedrockClient.send(command);
