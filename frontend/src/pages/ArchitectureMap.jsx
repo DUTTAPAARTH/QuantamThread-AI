@@ -591,8 +591,8 @@ function ArchitectureMap() {
         style={{ minHeight: 0 }}
       >
         <div
-          className="border border-white/[0.06] rounded-xl overflow-hidden relative"
-          style={{ ...glass, boxShadow: glowShadow, width: "100%", height: "100%", position: "absolute", inset: "2rem" }}
+          className="border border-white/[0.06] rounded-xl overflow-hidden"
+          style={{ ...glass, boxShadow: glowShadow, position: "absolute", inset: "2rem" }}
         >
           <ReactFlow
             nodes={styledNodes}
