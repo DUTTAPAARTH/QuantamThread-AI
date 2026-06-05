@@ -191,8 +191,8 @@ function Dashboard() {
     [modules],
   );
   const totalVulns = useMemo(
-    () => modules.reduce((s, m) => s + m.vulns, 0),
-    [modules],
+    () => storeVulnerabilities.length,
+    [storeVulnerabilities],
   );
   const avgEntropy = useMemo(
     () =>
@@ -215,8 +215,13 @@ function Dashboard() {
   const vulnDistribution = useMemo(() => {
     const counts = { Critical: 0, High: 0, Medium: 0, Low: 0 };
     storeVulnerabilities.forEach((v) => {
-      const sev = v.severity || "Low";
-      if (counts[sev] !== undefined) counts[sev]++;
+      const sev = v.severity || "low";
+      const normalizedSev = sev.charAt(0).toUpperCase() + sev.slice(1).toLowerCase();
+      if (counts[normalizedSev] !== undefined) {
+        counts[normalizedSev]++;
+      } else {
+        counts.Low++;
+      }
     });
     return [
       { severity: "Critical", count: counts.Critical, bg: "bg-red-600" },
@@ -272,11 +277,14 @@ function Dashboard() {
       });
     }
     storeVulnerabilities.slice(0, 4).forEach((v) => {
+      const sev = v.severity || "Unknown";
+      const sevLower = sev.toLowerCase();
+      const normalizedSev = sev.charAt(0).toUpperCase() + sev.slice(1).toLowerCase();
       events.push({
         time: "--:--",
-        event: `${v.severity || "Unknown"} vulnerability found`,
-        type: v.severity === "Critical" ? "critical" : v.severity === "High" ? "warning" : "info",
-        detail: `${v.module || v.module_name || ""} • ${v.type || v.description || ""}`.slice(0, 60),
+        event: `${normalizedSev} vulnerability found`,
+        type: sevLower === "critical" ? "critical" : (sevLower === "high" || sevLower === "medium") ? "warning" : "info",
+        detail: `${v.module || v.module_name || ""} • ${v.library || v.cve || v.type || v.description || ""}`.slice(0, 60),
       });
     });
     modules.filter((m) => m.risk > 70).slice(0, 3).forEach((m) => {
@@ -1056,12 +1064,12 @@ function Dashboard() {
                         <div
                           className={`h-full ${sev.bg}`}
                           style={{
-                            width: `${(sev.count / totalVulns) * 100}%`,
+                            width: `${totalVulns > 0 ? (sev.count / totalVulns) * 100 : 0}%`,
                           }}
                         />
                       </div>
                       <p className="text-[8px] font-mono text-slate-500 mt-1">
-                        {Math.round((sev.count / totalVulns) * 100)}% of total
+                        {totalVulns > 0 ? Math.round((sev.count / totalVulns) * 100) : 0}% of total
                       </p>
                     </div>
                   </motion.div>
@@ -1124,21 +1132,21 @@ function Dashboard() {
                         transition={{ delay: i * 0.05 }}
                       >
                         <td className="text-[10px] font-mono font-bold text-slate-300 py-2 pr-3">
-                          {v.type || "Unknown"}
+                          {v.library || v.cve || "Unknown"}
                         </td>
                         <td className="pr-3">
                           <span
                             className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-md ${
-                              v.severity === "Critical"
+                              v.severity?.toLowerCase() === "critical"
                                 ? "bg-red-500/20 text-red-400"
-                                : v.severity === "High"
+                                : v.severity?.toLowerCase() === "high"
                                   ? "bg-orange-500/20 text-orange-400"
-                                  : v.severity === "Medium"
+                                  : v.severity?.toLowerCase() === "medium"
                                     ? "bg-amber-500/20 text-amber-400"
                                     : "bg-emerald-500/20 text-emerald-400"
                             }`}
                           >
-                            {v.severity || "Low"}
+                            {v.severity ? v.severity.charAt(0).toUpperCase() + v.severity.slice(1).toLowerCase() : "Low"}
                           </span>
                         </td>
                         <td className="text-[10px] font-mono text-slate-400 pr-3">
