@@ -103,44 +103,135 @@ async function analyzeProject(projectDir, projectName, projectId, repoUrl = null
   const moduleNames = Object.keys(moduleGroups);
   console.log(`📊 [Analyzer] Detected ${moduleNames.length} modules: ${moduleNames.join(", ")}`);
 
-  // Build a file summary for the AI prompt (keep it compact)
-  const fileSummary = files
-    .slice(0, 40) // limit to 40 files for prompt size
-    .map((f) => `${f.path} (${f.size}B)`)
-    .join("\n");
+  // Build a hierarchical tree of files to give deep folder structure details
+  const fileTreeText = buildFileTree(files);
 
-  // Build code snippets for analysis (first 50 lines of key files)
-  const keyFiles = files
-    .filter((f) => [".js", ".ts", ".jsx", ".tsx", ".py", ".java", ".go"].includes(f.ext))
-    .sort((a, b) => b.size - a.size)
-    .slice(0, 10);
+  // Find and parse dependency files
+  const dependencyFiles = files.filter(f => {
+    const name = path.basename(f.path).toLowerCase();
+    return [
+      "package.json",
+      "requirements.txt",
+      "go.mod",
+      "cargo.toml",
+      "pom.xml",
+      "build.gradle",
+      "pipfile",
+      "pyproject.toml"
+    ].includes(name);
+  });
 
-  const codeSnippets = keyFiles
-    .map((f) => {
-      const lines = f.content.split("\n").slice(0, 50).join("\n");
-      return `--- ${f.path} ---\n${lines}`;
-    })
-    .join("\n\n");
+  let dependencyFilesSummary = "";
+  for (const f of dependencyFiles) {
+    dependencyFilesSummary += `=== File: ${f.path} ===\n${(f.content || "").slice(0, 4000)}\n\n`;
+  }
+
+  // Gather code snippets (key files per module group)
+  const moduleSnippets = [];
+  for (const [modName, modFiles] of Object.entries(moduleGroups)) {
+    const codeFiles = modFiles.filter(f => 
+      [".js", ".ts", ".jsx", ".tsx", ".py", ".java", ".go", ".rs", ".rb", ".php", ".cs", ".kt", ".swift", ".vue", ".svelte"].includes(f.ext)
+    ).sort((a, b) => b.size - a.size);
+
+    // Take top 2 files of this module, up to 100 lines each
+    const selected = codeFiles.slice(0, 2);
+    for (const f of selected) {
+      const lines = f.content.split("\n").slice(0, 100).join("\n");
+      moduleSnippets.push(`--- Module: ${modName} | File: ${f.path} ---\n${lines}`);
+    }
+  }
+  const codeSnippets = moduleSnippets.slice(0, 15).join("\n\n");
 
   // ── Run all 3 AI analyses in parallel ─────────────────
   console.log("📊 [Analyzer] Running AI analyses (modules + security + deps) in parallel...");
 
-  const modulePrompt = `Analyze this project. Return ONLY a JSON array of modules.
-Files: ${fileSummary}
-Code: ${codeSnippets.slice(0, 4000)}
-Each element: {"name":"module","risk_score":0-100,"risk_level":"low|medium|high","bug_count":0,"dependency_count":0,"impact_radius":0,"ai_summary":"summary"}`;
+  const modulePrompt = `Analyze the modules (folders/components) in this software project. 
+Look at the project structure, configuration files, and source code.
+Identify the main modules, evaluate their bug risks, and return a JSON array.
 
-  const secPrompt = `Security scan this code. Return ONLY a JSON array.
-Code: ${codeSnippets.slice(0, 3500)}
-Each element: {"cve":"QT-YYYY-NNNN","severity":"critical|high|medium|low","exploitability":0.0-1.0,"library":"lib","description":"issue","affected_modules":0}
-If none found, return [].`;
+PROJECT: ${projectName}
+PROJECT DIRECTORY STRUCTURE:
+${fileTreeText.slice(0, 10000)}
 
-  const depPrompt = `Identify module dependencies. Return ONLY a JSON array.
-Structure: ${fileSummary.slice(0, 2000)}
-Code: ${codeSnippets.slice(0, 2500)}
-Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0,"depth":0,"circular_deps":0,"volatility":0.0,"direct_deps":["dep"],"reverse_deps":["dep"]}`;
+CONFIGURATION & DEPENDENCIES:
+${dependencyFilesSummary.slice(0, 8000)}
 
-  const genOpts = { max_gen_len: 768 };
+KEY CODE SNIPPETS:
+${codeSnippets.slice(0, 16000)}
+
+Return ONLY a JSON array containing one object per module. Follow these exact keys and types:
+[
+  {
+    "name": "string (e.g. backend, frontend, auth, components, or directory name)",
+    "risk_score": integer (0 to 100, indicating complexity and risk of bugs),
+    "risk_level": "string (low|medium|high)",
+    "bug_count": integer (estimated active bugs in this module based on complexity),
+    "dependency_count": integer (number of unique packages/libraries used here),
+    "impact_radius": integer (number of other modules that would be affected if this module fails, 0 to 10),
+    "ai_summary": "string (1-2 sentences summarizing the module's main purpose)",
+    "bugs": [
+      {
+        "severity": "critical|high|medium|low",
+        "count": integer
+      }
+    ]
+  }
+]
+Do not include any explanation, markdown, backticks, or other text outside the JSON.`;
+
+  const secPrompt = `Perform a security scan on this project. Identify vulnerabilities, insecure code patterns, insecure configurations, or outdated/insecure packages.
+
+PROJECT: ${projectName}
+PROJECT DIRECTORY STRUCTURE:
+${fileTreeText.slice(0, 10000)}
+
+CONFIGURATION & DEPENDENCIES:
+${dependencyFilesSummary.slice(0, 10000)}
+
+KEY CODE SNIPPETS:
+${codeSnippets.slice(0, 16000)}
+
+Return ONLY a JSON array of found vulnerabilities. Follow these exact keys and types:
+[
+  {
+    "cve": "string (e.g. CVE-YYYY-NNNN if matching an actual package, or QT-YYYY-NNNN for custom code flaws)",
+    "severity": "string (critical|high|medium|low)",
+    "exploitability": float (0.0 to 1.0, likelihood and ease of exploit),
+    "library": "string (the package name, file path, or 'Custom Code')",
+    "description": "string (details of the security issue, risk, and threat vector)",
+    "affected_modules": integer (number of modules affected by this flaw),
+    "dependency_chain": "string (e.g., package-a -> package-b -> vulnerable-package, or file path)",
+    "affected_versions": "string (e.g., < 4.17.2 or 'All versions')",
+    "patch_version": "string (e.g., 4.17.2 or 'Upgrade code structure')"
+  }
+]
+If no security risks or vulnerabilities are found, return a JSON empty array [].
+Do not include any explanation, markdown, backticks, or other text outside the JSON.`;
+
+  const depPrompt = `Analyze the internal dependencies of this project. Identify how the different modules (folders) and major files depend on each other.
+
+PROJECT: ${projectName}
+PROJECT DIRECTORY STRUCTURE:
+${fileTreeText.slice(0, 10000)}
+
+CONFIGURATION & DEPENDENCIES:
+${dependencyFilesSummary.slice(0, 8000)}
+
+KEY CODE SNIPPETS:
+${codeSnippets.slice(0, 16000)}
+
+Analyze imports, requires, and structures to find which modules import/use which other modules.
+Return ONLY a JSON array. Each element represents a module and its direct internal dependencies.
+Follow these exact keys and types:
+[
+  {
+    "module": "string (matching one of the module names from the project structure)",
+    "direct_deps": ["string (array of other module names that this module directly imports/uses)"]
+  }
+]
+Do not include any explanation, markdown, backticks, or other text outside the JSON.`;
+
+  const genOpts = { max_gen_len: 3000 };
   const [moduleResult, secResult, depResult] = await Promise.allSettled([
     callBedrock(modulePrompt, genOpts),
     callBedrock(secPrompt, genOpts),
@@ -181,7 +272,7 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
     for (const [modName, modFiles] of Object.entries(moduleGroups)) {
       moduleList.push({
         name: modName,
-        risk_score: 0,
+        risk_score: 20,
         risk_level: "low",
         bug_count: 0,
         dependency_count: modFiles.length,
@@ -205,13 +296,13 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
           vulnerabilitiesList.push({
             cve: v.cve || `QT-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
             severity: v.severity || "medium",
-            exploitability: Math.min(1, Math.max(0, v.exploitability || 0)),
-            affected_versions: v.affected_versions || "",
-            library: v.library || "",
-            patch_version: v.patch_version || "",
-            description: v.description || "",
-            affected_modules: v.affected_modules || 0,
-            dependency_chain: v.dependency_chain || "",
+            exploitability: Math.min(1, Math.max(0, v.exploitability || 0.5)),
+            affected_versions: v.affected_versions || "All versions",
+            library: v.library || "Custom Code",
+            patch_version: v.patch_version || "Upgrade code",
+            description: v.description || "Security scanner warning",
+            affected_modules: v.affected_modules || 1,
+            dependency_chain: v.dependency_chain || "Custom Code",
             repository: projectName,
           });
         }
@@ -226,30 +317,13 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
 
   // ── Process dependencies result ───────────────────────
   const depList = [];
+  const rawAIElements = [];
   if (depResult.status === "fulfilled") {
     try {
       const depData = parseJsonFromAI(depResult.value);
       if (Array.isArray(depData)) {
-        for (const d of depData) {
-          depList.push({
-            module: d.module || "unknown",
-            incoming_count: d.incoming_count || 0,
-            outgoing_count: d.outgoing_count || 0,
-            gravity: d.gravity || 0,
-            depth: d.depth || 0,
-            circular_deps: d.circular_deps || 0,
-            implicit_deps: d.implicit_deps || 0,
-            fan_in: d.incoming_count || 0,
-            fan_out: d.outgoing_count || 0,
-            volatility: d.volatility || 0,
-            chain: "",
-            transitive_exposure: 0,
-            direct_deps: JSON.stringify(d.direct_deps || []),
-            reverse_deps: JSON.stringify(d.reverse_deps || []),
-            repository: projectName,
-          });
-        }
-        console.log(`📊 [Analyzer] Processed ${depList.length} dependencies`);
+        rawAIElements.push(...depData);
+        console.log(`📊 [Analyzer] Received ${depData.length} raw AI dependencies`);
       }
     } catch (err) {
       console.error("📊 [Analyzer] Dependency parse failed:", err.message);
@@ -257,6 +331,136 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
   } else {
     console.error("📊 [Analyzer] Dependency analysis failed:", depResult.reason?.message);
   }
+
+  // ── Programmatic Graph Metrics Processor ───────────────
+  const moduleNamesSet = new Set(moduleList.map(m => m.name));
+  const depMap = {};
+  
+  for (const m of moduleList) {
+    depMap[m.name] = {
+      module: m.name,
+      direct_deps: [],
+      reverse_deps: [],
+      incoming_count: 0,
+      outgoing_count: 0,
+      gravity: 0,
+      depth: 1,
+      circular_deps: 0,
+      implicit_deps: 0,
+      fan_in: 0,
+      fan_out: 0,
+      volatility: 0.1,
+      transitive_exposure: 0,
+      repository: projectName
+    };
+  }
+
+  // Populate direct dependencies from AI response
+  for (const d of rawAIElements) {
+    const modName = d.module;
+    if (modName && depMap[modName]) {
+      const validDeps = (d.direct_deps || []).filter(name => moduleNamesSet.has(name) && name !== modName);
+      depMap[modName].direct_deps = validDeps;
+    }
+  }
+
+  // Compute reverse dependencies
+  for (const [name, data] of Object.entries(depMap)) {
+    for (const d of data.direct_deps) {
+      if (depMap[d]) {
+        depMap[d].reverse_deps.push(name);
+      }
+    }
+  }
+
+  // Calculate in/out degree counts
+  for (const data of Object.values(depMap)) {
+    data.outgoing_count = data.direct_deps.length;
+    data.incoming_count = data.reverse_deps.length;
+    data.fan_out = data.outgoing_count;
+    data.fan_in = data.incoming_count;
+  }
+
+  // Calculate cycles / circular dependencies using DFS
+  const hasPath = (start, target, visited = new Set()) => {
+    if (start === target) return true;
+    visited.add(start);
+    const neighbors = depMap[start]?.direct_deps || [];
+    for (const n of neighbors) {
+      if (!visited.has(n)) {
+        if (hasPath(n, target, visited)) return true;
+      }
+    }
+    return false;
+  };
+
+  for (const [name, data] of Object.entries(depMap)) {
+    let isCircular = 0;
+    for (const d of data.direct_deps) {
+      if (hasPath(d, name)) {
+        isCircular = 1;
+        break;
+      }
+    }
+    data.circular_deps = isCircular;
+  }
+
+  // Calculate transitive exposure (reachable dependents in reverse graph)
+  const getTransitiveDependents = (start) => {
+    const visited = new Set();
+    const q = [start];
+    while (q.length > 0) {
+      const curr = q.shift();
+      const dependents = depMap[curr]?.reverse_deps || [];
+      for (const d of dependents) {
+        if (!visited.has(d)) {
+          visited.add(d);
+          q.push(d);
+        }
+      }
+    }
+    return visited.size;
+  };
+
+  for (const [name, data] of Object.entries(depMap)) {
+    data.transitive_exposure = getTransitiveDependents(name);
+  }
+
+  // Calculate topological depth
+  const depths = {};
+  const computeDepth = (name, visited = new Set()) => {
+    if (depths[name] !== undefined) return depths[name];
+    if (visited.has(name)) return 1; // cycle breaker
+    visited.add(name);
+
+    const parents = depMap[name]?.reverse_deps || [];
+    if (parents.length === 0) {
+      depths[name] = 1;
+      return 1;
+    }
+    let maxParentDepth = 0;
+    for (const p of parents) {
+      maxParentDepth = Math.max(maxParentDepth, computeDepth(p, visited));
+    }
+    depths[name] = maxParentDepth + 1;
+    return depths[name];
+  };
+
+  for (const name of Object.keys(depMap)) {
+    depMap[name].depth = computeDepth(name);
+  }
+
+  // Calculate gravity and volatility
+  for (const [name, data] of Object.entries(depMap)) {
+    const mInfo = moduleList.find(m => m.name === name) || {};
+    const riskScore = mInfo.risk_score || 20;
+    data.gravity = Math.round(riskScore * (1 + 0.5 * data.transitive_exposure));
+    data.volatility = Number((0.1 + (data.outgoing_count * 0.15) + (data.circular_deps * 0.3)).toFixed(2));
+    
+    depList.push(data);
+  }
+
+  console.log(`📊 [Analyzer] Programmatically computed and finalized ${depList.length} dependency records`);
 
   // ── Architecture nodes/edges (AI-generated) ───────────
   console.log("📊 [Analyzer] Generating architecture map with AI...");
@@ -490,6 +694,51 @@ Return ONLY the JSON object. Example format:
   }
 
   return { modules: moduleList.length, files: files.length };
+}
+
+/**
+ * Render a complete indented text file tree of the project.
+ */
+function buildFileTree(files) {
+  const tree = {};
+  for (const f of files) {
+    const parts = f.path.split(/[\\/]/);
+    let curr = tree;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (i === parts.length - 1) {
+        curr[part] = `${(f.size / 1024).toFixed(1)}KB`;
+      } else {
+        if (!curr[part] || typeof curr[part] === 'string') {
+          curr[part] = {};
+        }
+        curr = curr[part];
+      }
+    }
+  }
+
+  function renderTree(node, indent = "") {
+    let result = "";
+    const keys = Object.keys(node).sort((a, b) => {
+      const aIsDir = typeof node[a] === 'object';
+      const bIsDir = typeof node[b] === 'object';
+      if (aIsDir && !bIsDir) return -1;
+      if (!aIsDir && bIsDir) return 1;
+      return a.localeCompare(b);
+    });
+
+    for (const key of keys) {
+      const val = node[key];
+      if (typeof val === 'object') {
+        result += `${indent}📁 ${key}/\n${renderTree(val, indent + "  ")}`;
+      } else {
+        result += `${indent}📄 ${key} (${val})\n`;
+      }
+    }
+    return result;
+  }
+
+  return renderTree(tree);
 }
 
 /**

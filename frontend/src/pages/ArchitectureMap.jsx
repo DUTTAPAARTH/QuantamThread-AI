@@ -177,13 +177,23 @@ export default function ArchitectureMap() {
     }
   }, [viewBox]);
 
-  const onWheel = useCallback((e) => {
-    e.preventDefault();
-    setViewBox((prev) => {
-      const factor = e.deltaY > 0 ? 1.1 : 0.9;
-      return { ...prev, scale: Math.max(0.3, Math.min(3, prev.scale * factor)) };
-    });
-  }, []);
+  useEffect(() => {
+    const svgEl = svgRef.current;
+    if (!svgEl) return;
+
+    const handleWheel = (e) => {
+      e.preventDefault();
+      setViewBox((prev) => {
+        const factor = e.deltaY > 0 ? 1.1 : 0.9;
+        return { ...prev, scale: Math.max(0.3, Math.min(3, prev.scale * factor)) };
+      });
+    };
+
+    svgEl.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      svgEl.removeEventListener("wheel", handleWheel);
+    };
+  }, [loading, nodes.length]);
 
   /* ── Edge connection count per node ─────────────────────────────────────── */
   const connectionCount = useMemo(() => {
@@ -320,7 +330,6 @@ export default function ArchitectureMap() {
               onMouseUp={onSvgMouseUp}
               onMouseLeave={onSvgMouseUp}
               onMouseDown={onSvgMouseDown}
-              onWheel={onWheel}
               style={{ cursor: dragging ? "grabbing" : isPanning ? "grabbing" : "grab", background: "radial-gradient(ellipse at 50% 40%, rgba(99,102,241,0.04) 0%, transparent 70%)" }}
             >
               {/* Grid dots */}
