@@ -496,7 +496,7 @@ Do not include any explanation, markdown, backticks, or other text outside the J
 
 PROJECT: ${projectName}
 FILES SCANNED:
-${fileSummary}
+${fileTreeText.slice(0, 5000)}
 
 CODE SAMPLES (top files):
 ${codeSnippets.slice(0, 4000)}
