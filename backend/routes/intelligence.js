@@ -202,6 +202,7 @@ router.get("/architecture", async (req, res) => {
         risk: r.risk,
         load: r.load,
         riskScore: r.risk_score,
+        description: r.description || "",
       },
     }));
 
@@ -210,6 +211,7 @@ router.get("/architecture", async (req, res) => {
       source: r.source,
       target: r.target,
       animated: r.animated === 1 || r.animated === true,
+      label: r.label || "",
       style: { stroke: r.stroke, strokeWidth: r.stroke_width },
     }));
 

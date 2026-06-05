@@ -260,148 +260,142 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
 
   // ── Architecture nodes/edges (AI-generated) ───────────
   console.log("📊 [Analyzer] Generating architecture map with AI...");
-  const archModuleNames = moduleList.map((m) => m.name);
-  const depSummary = depList.map((d) => ({
-    module: d.module,
-    direct_deps: JSON.parse(d.direct_deps || "[]"),
-    reverse_deps: JSON.parse(d.reverse_deps || "[]"),
-  }));
 
-  const archPrompt = `You are a software architect. Analyze this project and generate a complete architecture graph for visualization.
+  // Build rich import/dependency graph from actual source scanning
+  const importGraph = {};
+  for (const [modName, modFiles] of Object.entries(moduleGroups)) {
+    importGraph[modName] = new Set();
+    for (const f of modFiles) {
+      const importMatches = f.content.match(/(?:import\s+.*?from\s+['"]|require\s*\(\s*['"])(\.\.?\/[^'"]+)/g) || [];
+      for (const imp of importMatches) {
+        const pathMatch = imp.match(/['"](\.\.?\/[^'"]+)/);
+        if (!pathMatch) continue;
+        const importedPath = pathMatch[1].toLowerCase();
+        for (const otherMod of Object.keys(moduleGroups)) {
+          if (otherMod !== modName && importedPath.includes(otherMod.toLowerCase())) {
+            importGraph[modName].add(otherMod);
+          }
+        }
+      }
+    }
+  }
+  const importGraphJson = JSON.stringify(
+    Object.fromEntries(Object.entries(importGraph).map(([k, v]) => [k, [...v]])),
+    null, 2
+  ).slice(0, 2000);
 
-Project: ${projectName}
-Files:\n${fileSummary}
-Code:\n${codeSnippets.slice(0, 3000)}
-Detected modules: ${archModuleNames.join(", ")}
-Dependencies: ${JSON.stringify(depSummary).slice(0, 1500)}
+  const moduleRiskMap = Object.fromEntries(
+    moduleList.map(m => [m.name, { risk: m.risk_level, score: m.risk_score, bugs: m.bug_count }])
+  );
 
-Return ONLY a JSON object with "nodes" and "edges" arrays.
-- nodes: Each node represents a logical component/module/layer. Include 5-15 nodes.
-  Format: {"id":"node-0","label":"ComponentName","risk":"low|medium|high","risk_score":0-100,"load":0-100,"x":number,"y":number}
-  Position nodes in a meaningful layout: entry points at top (y~50-150), core logic in middle (y~200-400), data/storage at bottom (y~450-600). Spread x from 50 to 700. Group related modules closer together.
-- edges: Each edge represents a dependency/data flow between nodes.
-  Format: {"id":"edge-0","source":"node-0","target":"node-1","animated":false}
-  animated=true for high-risk connections.
+  const archPrompt = `You are a senior software architect performing a deep code analysis. I will give you the structure of a real software project and you must generate a precise architecture graph for interactive visualization.
 
-Create edges that reflect real imports, data flow, and dependencies in the code. Every node should have at least one edge. Make the graph connected.`;
+PROJECT: ${projectName}
+FILES SCANNED:
+${fileSummary}
+
+CODE SAMPLES (top files):
+${codeSnippets.slice(0, 4000)}
+
+DETECTED MODULES AND RISK:
+${JSON.stringify(moduleRiskMap, null, 2).slice(0, 1500)}
+
+ACTUAL IMPORT/DEPENDENCY GRAPH (scanned from source code):
+${importGraphJson}
+
+TASK: Generate a JSON architecture graph that accurately represents this codebase's structure.
+
+RULES (follow exactly):
+1. Return ONLY valid JSON — no markdown, no backticks, no explanation text before or after.
+2. The JSON must have exactly two keys: "nodes" and "edges".
+3. nodes array: 6–14 nodes representing real logical layers/components found in the code.
+   Each node: {"id":"node-0","label":"ComponentName","risk":"low|medium|high","risk_score":0-100,"load":0-100,"x":50-900,"y":50-700,"description":"one sentence about what this component does"}
+   - Use REAL names from the codebase (not generic names like "Module1").
+   - risk_score must match the actual complexity/bug count of that module.
+   - Position nodes in layers: API/Routes at top (y 50–150), Services/Logic in middle (y 200–400), Data/Storage at bottom (y 450–650). Spread x across the full width.
+4. edges array: Real dependency edges derived from the import graph above.
+   Each edge: {"id":"edge-0","source":"node-0","target":"node-1","animated":false,"label":"uses|calls|reads|writes"}
+   - animated: true only for high-risk or bidirectional dependencies.
+   - Every node must connect to at least one other node. No isolated nodes.
+   - Do NOT fabricate edges that don't exist in the import graph.
+5. The graph must be fully connected (no isolated components).
+
+Return ONLY the JSON object. Example format:
+{"nodes":[{"id":"node-0","label":"API Routes","risk":"medium","risk_score":45,"load":70,"x":400,"y":80,"description":"Express route handlers for REST endpoints"},...],"edges":[{"id":"edge-0","source":"node-0","target":"node-1","animated":false,"label":"calls"},...]}`
 
   let archNodes = [];
   let archEdges = [];
 
   try {
-    const archResult = await callBedrock(archPrompt, { max_gen_len: 2048 });
+    const archResult = await callBedrock(archPrompt, { max_gen_len: 3000 });
     const archData = parseJsonFromAI(archResult);
 
-    if (archData && !Array.isArray(archData) && archData.nodes) {
+    if (archData && typeof archData === 'object' && !Array.isArray(archData) && Array.isArray(archData.nodes) && archData.nodes.length > 0) {
       archNodes = archData.nodes;
       archEdges = archData.edges || [];
-    } else if (Array.isArray(archData)) {
-      // AI returned just nodes array — treat as nodes
-      archNodes = archData;
+      console.log(`📊 [Analyzer] AI generated ${archNodes.length} nodes, ${archEdges.length} edges`);
+    } else {
+      console.warn("📊 [Analyzer] AI arch response invalid shape — will use code-analysis fallback");
     }
   } catch (err) {
     console.error("📊 [Analyzer] AI architecture generation failed:", err.message);
   }
 
-  // Fallback: if AI didn't produce valid nodes, build from **actual code analysis**
+  // Fallback: build entirely from real code scanning (no random data)
   if (!archNodes.length && moduleList.length > 0) {
-    console.log("📊 [Analyzer] AI arch failed — building from code analysis fallback");
-    const spacing = 200;
-    const cols = Math.ceil(Math.sqrt(moduleList.length));
+    console.log("📊 [Analyzer] Building architecture from code analysis (AI fallback)");
+    const cols = Math.max(1, Math.ceil(Math.sqrt(moduleList.length)));
+    const spacingX = Math.min(250, Math.floor(800 / cols));
+    const spacingY = 200;
 
-    // Estimate risk from file sizes and code patterns in each module
     archNodes = moduleList.map((m, i) => {
       const modFiles = moduleGroups[m.name] || [];
-      const totalSize = modFiles.reduce((s, f) => s + f.size, 0);
-      const totalLines = modFiles.reduce((s, f) => s + f.content.split("\n").length, 0);
-      // Heuristic risk: larger/complex modules = higher risk
-      const sizeRisk = Math.min(100, Math.round((totalSize / 5000) * 30));
-      const lineRisk = Math.min(100, Math.round((totalLines / 500) * 25));
-      const codePatternRisk = modFiles.some(f =>
-        /catch\s*\(|throw\s|TODO|FIXME|HACK|unsafe|eval\(|exec\(/i.test(f.content)
-      ) ? 20 : 0;
-      const riskScore = Math.min(100, sizeRisk + lineRisk + codePatternRisk);
-      const risk = riskScore >= 60 ? "high" : riskScore >= 30 ? "medium" : "low";
-
+      const totalLines = modFiles.reduce((s, f) => s + (f.content || "").split("\n").length, 0);
+      const load = Math.min(100, Math.round(totalLines / 5));
       return {
         id: `node-${i}`,
         label: m.name,
-        risk,
-        risk_score: riskScore,
-        load: Math.min(100, Math.round(totalLines / 10)),
-        x: (i % cols) * spacing + 100,
-        y: Math.floor(i / cols) * spacing + 100,
+        risk: m.risk_level || "low",
+        risk_score: m.risk_score || 0,
+        load,
+        x: (i % cols) * spacingX + 80,
+        y: Math.floor(i / cols) * spacingY + 80,
+        description: m.ai_summary || `${modFiles.length} files`
       };
     });
 
-    // Build edges by scanning actual import/require statements across modules
+    // Build edges from real import graph
     archEdges = [];
     let eIdx = 0;
-    const modNameToIdx = {};
-    moduleList.forEach((m, i) => { modNameToIdx[m.name] = i; });
+    const nameToNodeId = Object.fromEntries(moduleList.map((m, i) => [m.name, `node-${i}`]));
+    const seenEdges = new Set();
 
-    for (const [modName, modFiles] of Object.entries(moduleGroups)) {
-      const srcIdx = modNameToIdx[modName];
-      if (srcIdx === undefined) continue;
-      for (const f of modFiles) {
-        // Scan for import/require patterns that reference other modules
-        const importMatches = f.content.match(/(?:import\s+.*from\s+['"]|require\s*\(\s*['"])(\.\.?\/[^'"]+)/g) || [];
-        for (const imp of importMatches) {
-          const pathMatch = imp.match(/['"]\.\.?\/([^'"]+)/);
-          if (!pathMatch) continue;
-          const importedPath = pathMatch[1];
-          // Match against other module names
-          for (const [otherMod, otherIdx] of Object.entries(modNameToIdx)) {
-            if (otherIdx !== srcIdx && importedPath.toLowerCase().includes(otherMod.toLowerCase())) {
-              const edgeKey = `${srcIdx}->${otherIdx}`;
-              if (!archEdges.some(e => e._key === edgeKey)) {
-                const isHighRisk = archNodes[srcIdx].risk === "high" || archNodes[otherIdx].risk === "high";
-                archEdges.push({ id: `edge-${eIdx++}`, source: `node-${srcIdx}`, target: `node-${otherIdx}`, animated: isHighRisk, _key: edgeKey });
-              }
-            }
-          }
+    for (const [src, targets] of Object.entries(importGraph)) {
+      const srcId = nameToNodeId[src];
+      if (!srcId) continue;
+      for (const tgt of targets) {
+        const tgtId = nameToNodeId[tgt];
+        if (!tgtId || tgtId === srcId) continue;
+        const key = `${srcId}→${tgtId}`;
+        if (!seenEdges.has(key)) {
+          seenEdges.add(key);
+          const srcNode = archNodes.find(n => n.id === srcId);
+          const tgtNode = archNodes.find(n => n.id === tgtId);
+          const highRisk = (srcNode?.risk === "high" || tgtNode?.risk === "high");
+          archEdges.push({ id: `edge-${eIdx++}`, source: srcId, target: tgtId, animated: highRisk, label: "uses" });
         }
       }
     }
 
-    // Also add edges from dependency data if available
-    for (const dep of depList) {
-      const directDeps = JSON.parse(dep.direct_deps || "[]");
-      const srcIdx = moduleList.findIndex((m) => m.name === dep.module);
-      for (const tgt of directDeps) {
-        const tgtIdx = moduleList.findIndex((m) => m.name === tgt);
-        if (srcIdx >= 0 && tgtIdx >= 0 && srcIdx !== tgtIdx) {
-          const edgeKey = `${srcIdx}->${tgtIdx}`;
-          if (!archEdges.some((e) => e._key === edgeKey)) {
-            archEdges.push({ id: `edge-${eIdx++}`, source: `node-${srcIdx}`, target: `node-${tgtIdx}`, animated: false, _key: edgeKey });
-          }
-        }
+    // Guarantee connectivity — chain nodes that have no edges
+    const connectedNodes = new Set(archEdges.flatMap(e => [e.source, e.target]));
+    for (let i = 0; i < archNodes.length; i++) {
+      if (!connectedNodes.has(archNodes[i].id) && archNodes.length > 1) {
+        const targetIdx = i === 0 ? 1 : 0;
+        archEdges.push({ id: `edge-${eIdx++}`, source: archNodes[i].id, target: archNodes[targetIdx].id, animated: false, label: "uses" });
+        connectedNodes.add(archNodes[i].id);
       }
     }
-
-    // Guarantee edges - if fewer than 1 edge per 2 nodes, add proximity chain
-    // so Architecture Map is never blank even when import scanning finds nothing.
-    const minExpectedEdges = Math.max(1, Math.floor(archNodes.length / 2));
-    if (archEdges.length < minExpectedEdges && archNodes.length > 1) {
-      console.log('[Analyzer] Only ' + archEdges.length + ' edges - adding proximity-chain edges');
-      const existingPairs = new Set(archEdges.map(e => e.source + '->' + e.target));
-      for (let i = 0; i < archNodes.length - 1; i++) {
-        const pair = archNodes[i].id + '->' + archNodes[i + 1].id;
-        if (!existingPairs.has(pair)) {
-          archEdges.push({ id: 'edge-' + (eIdx++), source: archNodes[i].id, target: archNodes[i + 1].id, animated: false });
-          existingPairs.add(pair);
-        }
-      }
-      if (archNodes.length >= 4) {
-        const mid = Math.floor(archNodes.length / 2);
-        const pair = archNodes[0].id + '->' + archNodes[mid].id;
-        if (!existingPairs.has(pair)) {
-          archEdges.push({ id: 'edge-' + (eIdx++), source: archNodes[0].id, target: archNodes[mid].id, animated: false });
-        }
-      }
-    }
-
-    archEdges = archEdges.map(({ _key, ...e }) => e);
   }
 
   const architectureNodesList = archNodes.map((n) => ({
@@ -413,6 +407,7 @@ Create edges that reflect real imports, data flow, and dependencies in the code.
     risk: n.risk || "low",
     load: n.load || 0,
     risk_score: clamp(n.risk_score, 0, 100),
+    description: n.description || "",
   }));
 
   const architectureEdgesList = archEdges.map((e) => ({
@@ -421,6 +416,7 @@ Create edges that reflect real imports, data flow, and dependencies in the code.
     source: e.source,
     target: e.target,
     animated: e.animated ? 1 : 0,
+    label: e.label || "",
     stroke: e.stroke || "#94a3b8",
     stroke_width: e.stroke_width || 1.5,
   }));
