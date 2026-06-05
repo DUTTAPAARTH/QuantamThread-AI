@@ -1,10 +1,10 @@
 const express = require("express");
-const { db } = require("../db");
+const s3Store = require("../services/s3Store");
 
 const router = express.Router();
 
 // POST /impact – Create an impact analysis entry
-router.post("/", (req, res) => {
+router.post("/", async (req, res) => {
   const { project_id, risk, affected_services, affected_teams, confidence } = req.body;
 
   if (!project_id) {
@@ -22,43 +22,45 @@ router.post("/", (req, res) => {
     : affected_teams || "";
   const conf = typeof confidence === "number" ? confidence : 0.5;
 
-  // Verify the project exists
-  db.get(`SELECT id FROM projects WHERE id = ?`, [project_id], (err, project) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
+  try {
+    // Verify the project exists in s3Store
+    const project = await s3Store.getProject(project_id);
     if (!project) {
       return res.status(404).json({ error: `Project with id ${project_id} not found` });
     }
 
-    const sql = `INSERT INTO impact_analysis (project_id, risk, affected_services, affected_teams, confidence) VALUES (?, ?, ?, ?, ?)`;
-    db.run(sql, [project_id, risk.trim(), services, teams, conf], function (err) {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      res.status(201).json({
-        id: this.lastID,
-        project_id,
-        risk: risk.trim(),
-        affected_services: services,
-        affected_teams: teams,
-        confidence: conf,
-        created_at: new Date().toISOString(),
-      });
-    });
-  });
+    const analyses = await s3Store.getImpactAnalyses(project_id);
+    const lastId = analyses.reduce((max, a) => (a.id > max ? a.id : max), 0);
+
+    const newAnalysis = {
+      id: lastId + 1,
+      project_id: Number(project_id),
+      risk: risk.trim(),
+      affected_services: services,
+      affected_teams: teams,
+      confidence: conf,
+      created_at: new Date().toISOString(),
+    };
+
+    analyses.push(newAnalysis);
+    await s3Store.saveImpactAnalyses(project_id, analyses);
+
+    res.status(201).json(newAnalysis);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /impact/:project_id – Get all impact analyses for a project
-router.get("/:project_id", (req, res) => {
+router.get("/:project_id", async (req, res) => {
   const { project_id } = req.params;
-  const sql = `SELECT * FROM impact_analysis WHERE project_id = ? ORDER BY created_at DESC`;
-  db.all(sql, [project_id], (err, rows) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
-    res.json(rows);
-  });
+  try {
+    const analyses = await s3Store.getImpactAnalyses(project_id);
+    analyses.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    res.json(analyses);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

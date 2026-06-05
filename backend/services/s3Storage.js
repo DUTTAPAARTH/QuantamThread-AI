@@ -1,4 +1,4 @@
-﻿/**
+/**
  * S3 Storage Service — Upload, download, and delete project ZIPs in S3.
  * Falls back gracefully when S3_BUCKET is not configured.
  */
@@ -100,28 +100,25 @@ async function listProjectsFromS3() {
 
 
 /**
- * Save intelligence analysis results as JSON to S3.
- * Key: projects/{id}/intelligence.json
+ * Save a JS object/array as JSON to S3.
  */
-async function saveIntelligenceToS3(projectId, data) {
+async function saveJsonToS3(key, data) {
   if (!s3) return;
-  const key = `projects/${projectId}/intelligence.json`;
   await s3.send(new PutObjectCommand({
     Bucket: BUCKET,
     Key: key,
     Body: JSON.stringify(data),
     ContentType: "application/json",
   }));
-  console.log(`☁️  Saved intelligence to S3: ${key}`);
+  console.log(`☁️  Saved JSON to S3: ${key}`);
 }
 
 /**
- * Load intelligence analysis results from S3.
+ * Load a JSON file from S3 and parse it.
  * Returns null if not found.
  */
-async function loadIntelligenceFromS3(projectId) {
+async function loadJsonFromS3(key) {
   if (!s3) return null;
-  const key = `projects/${projectId}/intelligence.json`;
   try {
     const res = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
     const chunks = [];
@@ -133,4 +130,31 @@ async function loadIntelligenceFromS3(projectId) {
   }
 }
 
-module.exports = { uploadToS3, downloadFromS3, deleteFromS3, isS3Enabled, s3Key, listProjectsFromS3, saveIntelligenceToS3, loadIntelligenceFromS3 };
+/**
+ * Save intelligence analysis results as JSON to S3.
+ * Key: projects/{id}/intelligence.json
+ */
+async function saveIntelligenceToS3(projectId, data) {
+  await saveJsonToS3(`projects/${projectId}/intelligence.json`, data);
+}
+
+/**
+ * Load intelligence analysis results from S3.
+ * Returns null if not found.
+ */
+async function loadIntelligenceFromS3(projectId) {
+  return await loadJsonFromS3(`projects/${projectId}/intelligence.json`);
+}
+
+module.exports = {
+  uploadToS3,
+  downloadFromS3,
+  deleteFromS3,
+  isS3Enabled,
+  s3Key,
+  listProjectsFromS3,
+  saveIntelligenceToS3,
+  loadIntelligenceFromS3,
+  saveJsonToS3,
+  loadJsonFromS3
+};

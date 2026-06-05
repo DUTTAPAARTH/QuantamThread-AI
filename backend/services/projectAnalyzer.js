@@ -5,9 +5,8 @@
 
 const fs = require("fs");
 const path = require("path");
-const { dbRun, dbAll } = require("../db");
+const s3Store = require("./s3Store");
 const { callBedrock } = require("./bedrockClient");
-const { saveIntelligenceToS3 } = require("./s3Storage");
 const { generateEvolutionTimeline } = require("./evolutionTimeline");
 
 const CODE_EXTENSIONS = new Set([
@@ -87,8 +86,9 @@ function groupIntoModules(files) {
  * @param {string} projectDir - Path to the extracted project folder
  * @param {string} projectName - Name to use as repository key
  * @param {number} projectId - DB project ID
+ * @param {string} repoUrl - GitHub repository URL (optional)
  */
-async function analyzeProject(projectDir, projectName, projectId) {
+async function analyzeProject(projectDir, projectName, projectId, repoUrl = null) {
   console.log(`\n📊 [Analyzer] Starting analysis of "${projectName}" from ${projectDir}`);
 
   const files = collectFiles(projectDir);
@@ -102,14 +102,6 @@ async function analyzeProject(projectDir, projectName, projectId) {
   const moduleGroups = groupIntoModules(files);
   const moduleNames = Object.keys(moduleGroups);
   console.log(`📊 [Analyzer] Detected ${moduleNames.length} modules: ${moduleNames.join(", ")}`);
-
-  // Clear existing data for this project/repo
-  await dbRun("DELETE FROM modules WHERE repository = ?", [projectName]);
-  await dbRun("DELETE FROM vulnerabilities WHERE repository = ?", [projectName]);
-  await dbRun("DELETE FROM dependencies WHERE repository = ?", [projectName]);
-  await dbRun("DELETE FROM architecture_nodes WHERE repository = ?", [projectName]);
-  await dbRun("DELETE FROM architecture_edges WHERE repository = ?", [projectName]);
-  await dbRun("DELETE FROM time_periods WHERE repository = ?", [projectName]);
 
   // Build a file summary for the AI prompt (keep it compact)
   const fileSummary = files
@@ -156,29 +148,26 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
   ]);
 
   // ── Process modules result ────────────────────────────
+  const moduleList = [];
   if (moduleResult.status === "fulfilled") {
     try {
       const moduleData = parseJsonFromAI(moduleResult.value);
       if (Array.isArray(moduleData) && moduleData.length > 0) {
         for (const m of moduleData) {
-          await dbRun(
-            `INSERT INTO modules (name, risk_score, risk_level, bug_count, dependency_count, impact_radius, last_modified, bugs, ai_summary, repository)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              m.name || "unknown",
-              clamp(m.risk_score, 0, 100),
-              m.risk_level || "low",
-              m.bug_count || 0,
-              m.dependency_count || 0,
-              m.impact_radius || 0,
-              new Date().toISOString(),
-              JSON.stringify(m.bugs || []),
-              m.ai_summary || "",
-              projectName,
-            ]
-          );
+          moduleList.push({
+            name: m.name || "unknown",
+            risk_score: clamp(m.risk_score, 0, 100),
+            risk_level: m.risk_level || "low",
+            bug_count: m.bug_count || 0,
+            dependency_count: m.dependency_count || 0,
+            impact_radius: m.impact_radius || 0,
+            last_modified: new Date().toISOString(),
+            bugs: JSON.stringify(m.bugs || []),
+            ai_summary: m.ai_summary || "",
+            repository: projectName,
+          });
         }
-        console.log(`📊 [Analyzer] Inserted ${moduleData.length} modules`);
+        console.log(`📊 [Analyzer] Processed ${moduleList.length} modules`);
       }
     } catch (err) {
       console.error("📊 [Analyzer] Module parse failed:", err.message);
@@ -188,41 +177,45 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
   }
 
   // Fallback: insert basic modules from directory structure if none inserted
-  const existingModules = await dbAll("SELECT COUNT(*) as cnt FROM modules WHERE repository = ?", [projectName]);
-  if (existingModules[0].cnt === 0) {
+  if (moduleList.length === 0) {
     for (const [modName, modFiles] of Object.entries(moduleGroups)) {
-      await dbRun(
-        `INSERT INTO modules (name, risk_score, risk_level, bug_count, dependency_count, impact_radius, last_modified, bugs, ai_summary, repository)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [modName, 0, "low", 0, modFiles.length, 0, new Date().toISOString(), "[]", `${modFiles.length} files`, projectName]
-      );
+      moduleList.push({
+        name: modName,
+        risk_score: 0,
+        risk_level: "low",
+        bug_count: 0,
+        dependency_count: modFiles.length,
+        impact_radius: 0,
+        last_modified: new Date().toISOString(),
+        bugs: "[]",
+        ai_summary: `${modFiles.length} files`,
+        repository: projectName,
+      });
     }
+    console.log(`📊 [Analyzer] Fallback processed ${moduleList.length} modules`);
   }
 
   // ── Process security result ───────────────────────────
+  const vulnerabilitiesList = [];
   if (secResult.status === "fulfilled") {
     try {
       const secData = parseJsonFromAI(secResult.value);
       if (Array.isArray(secData)) {
         for (const v of secData) {
-          await dbRun(
-            `INSERT INTO vulnerabilities (cve, severity, exploitability, affected_versions, library, patch_version, description, affected_modules, dependency_chain, repository)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              v.cve || `QT-${Date.now()}`,
-              v.severity || "medium",
-              Math.min(1, Math.max(0, v.exploitability || 0)),
-              v.affected_versions || "",
-              v.library || "",
-              v.patch_version || "",
-              v.description || "",
-              v.affected_modules || 0,
-              v.dependency_chain || "",
-              projectName,
-            ]
-          );
+          vulnerabilitiesList.push({
+            cve: v.cve || `QT-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            severity: v.severity || "medium",
+            exploitability: Math.min(1, Math.max(0, v.exploitability || 0)),
+            affected_versions: v.affected_versions || "",
+            library: v.library || "",
+            patch_version: v.patch_version || "",
+            description: v.description || "",
+            affected_modules: v.affected_modules || 0,
+            dependency_chain: v.dependency_chain || "",
+            repository: projectName,
+          });
         }
-        console.log(`📊 [Analyzer] Inserted ${secData.length} vulnerabilities`);
+        console.log(`📊 [Analyzer] Processed ${vulnerabilitiesList.length} vulnerabilities`);
       }
     } catch (err) {
       console.error("📊 [Analyzer] Security parse failed:", err.message);
@@ -232,34 +225,31 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
   }
 
   // ── Process dependencies result ───────────────────────
+  const depList = [];
   if (depResult.status === "fulfilled") {
     try {
       const depData = parseJsonFromAI(depResult.value);
       if (Array.isArray(depData)) {
         for (const d of depData) {
-          await dbRun(
-            `INSERT INTO dependencies (module, incoming_count, outgoing_count, gravity, depth, circular_deps, implicit_deps, fan_in, fan_out, volatility, chain, transitive_exposure, direct_deps, reverse_deps, repository)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              d.module || "unknown",
-              d.incoming_count || 0,
-              d.outgoing_count || 0,
-              d.gravity || 0,
-              d.depth || 0,
-              d.circular_deps || 0,
-              d.implicit_deps || 0,
-              d.incoming_count || 0,
-              d.outgoing_count || 0,
-              d.volatility || 0,
-              "",
-              0,
-              JSON.stringify(d.direct_deps || []),
-              JSON.stringify(d.reverse_deps || []),
-              projectName,
-            ]
-          );
+          depList.push({
+            module: d.module || "unknown",
+            incoming_count: d.incoming_count || 0,
+            outgoing_count: d.outgoing_count || 0,
+            gravity: d.gravity || 0,
+            depth: d.depth || 0,
+            circular_deps: d.circular_deps || 0,
+            implicit_deps: d.implicit_deps || 0,
+            fan_in: d.incoming_count || 0,
+            fan_out: d.outgoing_count || 0,
+            volatility: d.volatility || 0,
+            chain: "",
+            transitive_exposure: 0,
+            direct_deps: JSON.stringify(d.direct_deps || []),
+            reverse_deps: JSON.stringify(d.reverse_deps || []),
+            repository: projectName,
+          });
         }
-        console.log(`📊 [Analyzer] Inserted ${depData.length} dependencies`);
+        console.log(`📊 [Analyzer] Processed ${depList.length} dependencies`);
       }
     } catch (err) {
       console.error("📊 [Analyzer] Dependency parse failed:", err.message);
@@ -270,9 +260,6 @@ Each element: {"module":"name","incoming_count":0,"outgoing_count":0,"gravity":0
 
   // ── Architecture nodes/edges (AI-generated) ───────────
   console.log("📊 [Analyzer] Generating architecture map with AI...");
-  const moduleList = await dbAll("SELECT * FROM modules WHERE repository = ?", [projectName]);
-  const depList = await dbAll("SELECT * FROM dependencies WHERE repository = ?", [projectName]);
-
   const archModuleNames = moduleList.map((m) => m.name);
   const depSummary = depList.map((d) => ({
     module: d.module,
@@ -417,119 +404,93 @@ Create edges that reflect real imports, data flow, and dependencies in the code.
     archEdges = archEdges.map(({ _key, ...e }) => e);
   }
 
+  const architectureNodesList = archNodes.map((n) => ({
+    node_id: n.id || `node-${archNodes.indexOf(n)}`,
+    repository: projectName,
+    position_x: n.x ?? n.position_x ?? 100,
+    position_y: n.y ?? n.position_y ?? 100,
+    label: n.label || "Unknown",
+    risk: n.risk || "low",
+    load: n.load || 0,
+    risk_score: clamp(n.risk_score, 0, 100),
+  }));
 
-  // Insert nodes
-  for (const n of archNodes) {
-    await dbRun(
-      `INSERT INTO architecture_nodes (node_id, repository, position_x, position_y, label, risk, load, risk_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        n.id || `node-${archNodes.indexOf(n)}`,
-        projectName,
-        n.x ?? n.position_x ?? 100,
-        n.y ?? n.position_y ?? 100,
-        n.label || "Unknown",
-        n.risk || "low",
-        n.load || 0,
-        clamp(n.risk_score, 0, 100),
-      ]
-    );
-  }
-
-  // Insert edges
-  for (const e of archEdges) {
-    await dbRun(
-      `INSERT INTO architecture_edges (edge_id, repository, source, target, animated, stroke, stroke_width) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        e.id || `edge-${archEdges.indexOf(e)}`,
-        projectName,
-        e.source,
-        e.target,
-        e.animated ? 1 : 0,
-        e.stroke || "#94a3b8",
-        e.stroke_width || 1.5,
-      ]
-    );
-  }
+  const architectureEdgesList = archEdges.map((e) => ({
+    edge_id: e.id || `edge-${archEdges.indexOf(e)}`,
+    repository: projectName,
+    source: e.source,
+    target: e.target,
+    animated: e.animated ? 1 : 0,
+    stroke: e.stroke || "#94a3b8",
+    stroke_width: e.stroke_width || 1.5,
+  }));
 
   // ── Populate time_periods (Evolution Timeline) ────────────────────
+  const timePeriodsList = [];
   try {
     console.log("📊 [Analyzer] Generating evolution timeline...");
-    const activeModules = await dbAll("SELECT * FROM modules WHERE repository = ?", [projectName]);
-    const activeVulns = await dbAll("SELECT * FROM vulnerabilities WHERE repository = ?", [projectName]);
-    const activeDeps = await dbAll("SELECT * FROM dependencies WHERE repository = ?", [projectName]);
+    const totalRiskScore = moduleList.reduce((sum, m) => sum + (m.risk_score || 0), 0);
+    const avgRiskScore = moduleList.length > 0 ? Math.round(totalRiskScore / moduleList.length) : 0;
+    const totalVulnsCount = vulnerabilitiesList.length;
+    const totalDepsCount = depList.length;
+    const totalBugCount = moduleList.reduce((sum, m) => sum + (m.bug_count || 0), 0);
+    const avgEntropyScore = moduleList.length > 0 ? (totalBugCount * 0.1 / moduleList.length) : 0;
 
-    const totalRiskScore = activeModules.reduce((sum, m) => sum + (m.risk_score || 0), 0);
-    const avgRiskScore = activeModules.length > 0 ? Math.round(totalRiskScore / activeModules.length) : 0;
-    const totalVulnsCount = activeVulns.length;
-    const totalDepsCount = activeDeps.length;
-    const totalBugCount = activeModules.reduce((sum, m) => sum + (m.bug_count || 0), 0);
-    const avgEntropyScore = activeModules.length > 0 ? (totalBugCount * 0.1 / activeModules.length) : 0;
-
-    const timeline = generateEvolutionTimeline(
+    const timeline = await generateEvolutionTimeline(
       projectName,
-      activeModules.length,
+      moduleList.length,
       totalVulnsCount,
       totalDepsCount,
       avgRiskScore,
       avgEntropyScore,
-      projectDir
+      projectDir,
+      repoUrl
     );
 
     for (const t of timeline) {
-      await dbRun(
-        `INSERT INTO time_periods (version, date, risk_score, vulnerability_accumulation, dependency_count, entropy, modules_changed, commit_count, avg_commit_size, code_churn, days_to_release, breaking_changes, bugs_fixed, feature_count, repository, commit_hash, author)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          t.version,
-          t.date,
-          t.risk_score,
-          t.vulnerability_accumulation,
-          t.dependency_count,
-          t.entropy,
-          t.modules_changed,
-          t.commit_count,
-          t.avg_commit_size,
-          t.code_churn,
-          t.days_to_release,
-          t.breaking_changes,
-          t.bugs_fixed,
-          t.feature_count,
-          projectName,
-          t.commit_hash,
-          t.author
-        ]
-      );
+      timePeriodsList.push({
+        version: t.version,
+        date: t.date,
+        risk_score: t.risk_score,
+        vulnerability_accumulation: t.vulnerability_accumulation,
+        dependency_count: t.dependency_count,
+        entropy: t.entropy,
+        modules_changed: t.modules_changed,
+        commit_count: t.commit_count,
+        avg_commit_size: t.avg_commit_size,
+        code_churn: t.code_churn,
+        days_to_release: t.days_to_release,
+        breaking_changes: t.breaking_changes,
+        bugs_fixed: t.bugs_fixed,
+        feature_count: t.feature_count,
+        repository: projectName,
+        commit_hash: t.commit_hash,
+        author: t.author
+      });
     }
-    console.log(`📊 [Analyzer] Generated ${timeline.length} evolution time periods`);
+    console.log(`📊 [Analyzer] Generated ${timePeriodsList.length} evolution time periods`);
   } catch (timelineErr) {
     console.error("📊 [Analyzer] Evolution timeline generation failed:", timelineErr.message);
   }
 
-  console.log(`📊 [Analyzer] Architecture: ${archNodes.length} nodes, ${archEdges.length} edges`);
+  console.log(`📊 [Analyzer] Architecture: ${architectureNodesList.length} nodes, ${architectureEdgesList.length} edges`);
   console.log(`📊 [Analyzer] ✅ Analysis complete for "${projectName}"\n`);
 
-  // --- CACHE INTELLIGENCE DATA TO S3 ---
+  // --- CACHE INTELLIGENCE DATA ---
   try {
-    const modules = await dbAll("SELECT * FROM modules WHERE repository = ?", [projectName]);
-    const vulnerabilities = await dbAll("SELECT * FROM vulnerabilities WHERE repository = ?", [projectName]);
-    const dependencies = await dbAll("SELECT * FROM dependencies WHERE repository = ?", [projectName]);
-    const time_periods = await dbAll("SELECT * FROM time_periods WHERE repository = ?", [projectName]);
-    const architecture_nodes = await dbAll("SELECT * FROM architecture_nodes WHERE repository = ?", [projectName]);
-    const architecture_edges = await dbAll("SELECT * FROM architecture_edges WHERE repository = ?", [projectName]);
-
     const cacheData = {
-      modules,
-      vulnerabilities,
-      dependencies,
-      time_periods,
-      architecture_nodes,
-      architecture_edges
+      modules: moduleList,
+      vulnerabilities: vulnerabilitiesList,
+      dependencies: depList,
+      time_periods: timePeriodsList,
+      architecture_nodes: architectureNodesList,
+      architecture_edges: architectureEdgesList
     };
 
-    await saveIntelligenceToS3(projectId, cacheData);
-    console.log(`📊 [Analyzer] Saved intelligence cache to S3 for "${projectName}" (id=${projectId})`);
+    await s3Store.saveIntelligence(projectId, cacheData);
+    console.log(`📊 [Analyzer] Saved intelligence cache via s3Store for "${projectName}" (id=${projectId})`);
   } catch (s3CacheErr) {
-    console.error("📊 [Analyzer] S3 intelligence cache failed:", s3CacheErr.message);
+    console.error("📊 [Analyzer] Intelligence cache save failed:", s3CacheErr.message);
   }
 
   return { modules: moduleList.length, files: files.length };

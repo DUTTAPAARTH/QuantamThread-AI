@@ -1,5 +1,5 @@
 const express = require("express");
-const { dbRun, dbAll } = require("../db");
+const s3Store = require("../services/s3Store");
 const orchestrator = require("../orchestrator");
 
 const router = express.Router();
@@ -14,7 +14,7 @@ router.post("/", async (req, res) => {
   }
 
   const userMessage = message.trim();
-  const projectId = project_id || null; // null = Global AI mode
+  const projectId = project_id ? Number(project_id) : null; // null = Global AI mode
   const mode = projectId ? "project" : "global";
 
   try {
@@ -22,32 +22,34 @@ router.post("/", async (req, res) => {
     let agentResults;
 
     if (projectId) {
-      // Project-aware mode – orchestrator fetches context from DB
+      // Project-aware mode – orchestrator fetches context from S3/local store
       agentResults = await orchestrator.runAgentsWithContext(projectId, userMessage);
     } else {
       // Global AI mode – no project context
       agentResults = await orchestrator.runAgentsGlobal(userMessage);
     }
 
-    // ── Persist to database ─────────────────────────
-    const chatSql = `INSERT INTO chat_history (project_id, agent, user_message, agent_reply) VALUES (?, ?, ?, ?)`;
-    const insightSql = `INSERT INTO agent_insights (project_id, agent, summary, confidence) VALUES (?, ?, ?, ?)`;
+    // ── Persist to store ─────────────────────────────
+    try {
+      const history = await s3Store.getChatHistory(projectId);
+      const timestamp = new Date().toISOString();
+      let lastId = history.reduce((max, h) => (h.id > max ? h.id : max), 0);
 
-    await Promise.all(
-      agentResults.flatMap((result) => [
-        dbRun(chatSql, [projectId, result.agent, userMessage, result.reply]).catch((err) =>
-          console.error(`Error saving chat for ${result.agent}:`, err.message)
-        ),
-        dbRun(insightSql, [
-          projectId,
-          result.agent,
-          `${result.agent} analysis on: "${userMessage.substring(0, 60)}..."`,
-          result.confidence,
-        ]).catch((err) =>
-          console.error(`Error saving insight for ${result.agent}:`, err.message)
-        ),
-      ])
-    );
+      for (const result of agentResults) {
+        lastId++;
+        history.push({
+          id: lastId,
+          project_id: projectId,
+          agent: result.agent,
+          user_message: userMessage,
+          agent_reply: result.reply,
+          timestamp,
+        });
+      }
+      await s3Store.saveChatHistory(projectId, history);
+    } catch (saveErr) {
+      console.error("Error saving chat history to s3Store:", saveErr.message);
+    }
 
     // ── Return response ─────────────────────────────
     res.json({
@@ -68,10 +70,8 @@ router.post("/", async (req, res) => {
 // GET /chat/global – Get global (non-project) chat history
 router.get("/global", async (req, res) => {
   try {
-    const rows = await dbAll(
-      `SELECT * FROM chat_history WHERE project_id IS NULL ORDER BY timestamp ASC`
-    );
-    res.json(rows);
+    const history = await s3Store.getChatHistory(null);
+    res.json(history);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -81,11 +81,8 @@ router.get("/global", async (req, res) => {
 router.get("/:project_id", async (req, res) => {
   const { project_id } = req.params;
   try {
-    const rows = await dbAll(
-      `SELECT * FROM chat_history WHERE project_id = ? ORDER BY timestamp ASC`,
-      [project_id]
-    );
-    res.json(rows);
+    const history = await s3Store.getChatHistory(Number(project_id));
+    res.json(history);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

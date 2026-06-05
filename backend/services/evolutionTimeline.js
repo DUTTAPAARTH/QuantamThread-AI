@@ -1,4 +1,5 @@
 const { execSync } = require('child_process');
+const https = require('https');
 
 /**
  * Unique Evolution Timeline Generator
@@ -33,7 +34,45 @@ function fetchGitHistory(projectDir) {
   }
 }
 
-function generateEvolutionTimeline(repoName, modulesCount, vulnsCount, depsCount, avgRiskScore, avgEntropyScore, projectDir = null) {
+function fetchGitHubHistory(owner, repo) {
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'api.github.com',
+      path: `/repos/${owner}/${repo}/commits?per_page=6`,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'QuantumThread-AI'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      if (res.statusCode !== 200) {
+        return resolve(null);
+      }
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const commits = JSON.parse(data);
+          if (!Array.isArray(commits) || commits.length === 0) return resolve(null);
+          resolve(commits.map(c => ({
+            hash: c.sha,
+            date: c.commit.author.date,
+            author: c.commit.author.name,
+            message: c.commit.message
+          })));
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+
+    req.on('error', () => resolve(null));
+    req.end();
+  });
+}
+
+async function generateEvolutionTimeline(repoName, modulesCount, vulnsCount, depsCount, avgRiskScore, avgEntropyScore, projectDir = null, repoUrl = null) {
   // 1. Generate a deterministic seed from repoName
   let seed = 0;
   for (let i = 0; i < repoName.length; i++) {
@@ -58,7 +97,18 @@ function generateEvolutionTimeline(repoName, modulesCount, vulnsCount, depsCount
   ];
 
   const now = new Date();
-  const realCommits = fetchGitHistory(projectDir);
+  let realCommits = null;
+  
+  if (repoUrl) {
+    const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/\.]+)/i);
+    if (match) {
+      realCommits = await fetchGitHubHistory(match[1], match[2]);
+    }
+  }
+
+  if (!realCommits) {
+    realCommits = fetchGitHistory(projectDir);
+  }
 
   return versions.map((v, index) => {
     let periodDate = new Date(now.getTime() - v.offsetDays * 24 * 60 * 60 * 1000);

@@ -7,7 +7,7 @@
  *   - Project-aware mode (with project data + chat history)
  */
 
-const { dbGet, dbAll } = require("./db");
+const s3Store = require("./services/s3Store");
 
 const architectureAgent = require("./agents/architectureAgent");
 const bugAgent = require("./agents/bugAgent");
@@ -56,7 +56,7 @@ async function runAgentsGlobal(userQuery) {
 
 /**
  * Run all agents in Project-aware mode.
- * Fetches project data + recent chat history from SQLite and passes as context.
+ * Fetches project data + recent chat history and passes as context.
  *
  * @param {number} projectId - The project ID
  * @param {string} userQuery - The user's input message
@@ -65,26 +65,21 @@ async function runAgentsGlobal(userQuery) {
 async function runAgentsWithContext(projectId, userQuery) {
   console.log(`🧠 Orchestrator [PROJECT MODE, id=${projectId}]: building context...`);
 
-  // Fetch project info and recent chat history in parallel
-  const [project, chatHistory] = await Promise.all([
-    dbGet(`SELECT * FROM projects WHERE id = ?`, [projectId]),
-    dbAll(
-      `SELECT agent, user_message, agent_reply, timestamp
-       FROM chat_history
-       WHERE project_id = ?
-       ORDER BY timestamp DESC
-       LIMIT 20`,
-      [projectId]
-    ),
-  ]);
-
+  const project = await s3Store.getProject(projectId);
   if (!project) {
     throw new Error(`Project with id ${projectId} not found`);
   }
 
+  const chatHistory = await s3Store.getChatHistory(projectId);
+  // Sort chatHistory by timestamp desc, limit to 20, reverse for context (chronological)
+  const sortedChat = [...chatHistory]
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .slice(0, 20)
+    .reverse();
+
   const context = {
     project,
-    chatHistory: chatHistory.reverse(), // chronological order
+    chatHistory: sortedChat,
   };
 
   console.log(

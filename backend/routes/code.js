@@ -1,5 +1,5 @@
 const express = require("express");
-const { dbRun, dbAll } = require("../db");
+const s3Store = require("../services/s3Store");
 const { runAgentsGlobal, runAgentsGlobalStream } = require("../orchestrator");
 const router = express.Router();
 
@@ -28,12 +28,23 @@ router.post("/generate", async (req, res) => {
       confidence: r.confidence,
     }));
 
-    // Store in chat_history
+    // Store in chat_history via s3Store
     const combinedReply = agents.map((a) => `**[${a.agent}]** ${a.reply}`).join("\n\n");
-    await dbRun(
-      `INSERT INTO chat_history (project_id, agent, user_message, agent_reply) VALUES (?, ?, ?, ?)`,
-      [null, "query_assistant", trimmed, combinedReply]
-    ).catch((err) => console.error("Error saving history:", err.message));
+    try {
+      const history = await s3Store.getChatHistory(null);
+      const lastId = history.reduce((max, h) => (h.id > max ? h.id : max), 0);
+      history.push({
+        id: lastId + 1,
+        project_id: null,
+        agent: "query_assistant",
+        user_message: trimmed,
+        agent_reply: combinedReply,
+        timestamp: new Date().toISOString(),
+      });
+      await s3Store.saveChatHistory(null, history);
+    } catch (saveErr) {
+      console.error("Error saving history to s3Store:", saveErr.message);
+    }
 
     res.json({
       agents,
@@ -82,10 +93,21 @@ router.post("/stream", async (req, res) => {
 
     // Persist combined reply to chat history after stream finishes
     const combinedReply = allResults.map((a) => `**[${a.agent}]** ${a.reply}`).join("\n\n");
-    dbRun(
-      `INSERT INTO chat_history (project_id, agent, user_message, agent_reply) VALUES (?, ?, ?, ?)`,
-      [null, "query_assistant", trimmed, combinedReply]
-    ).catch((err) => console.error("Error saving history:", err.message));
+    try {
+      const history = await s3Store.getChatHistory(null);
+      const lastId = history.reduce((max, h) => (h.id > max ? h.id : max), 0);
+      history.push({
+        id: lastId + 1,
+        project_id: null,
+        agent: "query_assistant",
+        user_message: trimmed,
+        agent_reply: combinedReply,
+        timestamp: new Date().toISOString(),
+      });
+      await s3Store.saveChatHistory(null, history);
+    } catch (saveErr) {
+      console.error("Error saving history to s3Store:", saveErr.message);
+    }
   } catch (err) {
     console.error("Stream agent error:", err.message);
     if (!res.writableEnded) res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
@@ -101,14 +123,17 @@ router.post("/stream", async (req, res) => {
  */
 router.get("/history", async (req, res) => {
   try {
-    const rows = await dbAll(
-      `SELECT id, user_message as prompt, agent_reply as response, timestamp
-       FROM chat_history
-       WHERE agent = 'query_assistant'
-       ORDER BY timestamp DESC
-       LIMIT 50`
-    );
-    res.json(rows);
+    const history = await s3Store.getChatHistory(null);
+    const rows = history
+      .filter((h) => h.agent === "query_assistant")
+      .map((h) => ({
+        id: h.id,
+        prompt: h.user_message,
+        response: h.agent_reply,
+        timestamp: h.timestamp,
+      }));
+    rows.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    res.json(rows.slice(0, 50));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

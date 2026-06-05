@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const https = require("https");
 const AdmZip = require("adm-zip");
-const { db, dbRun, dbGet } = require("../db");
+const s3Store = require("../services/s3Store");
 const { analyzeProject } = require("../services/projectAnalyzer");
 const { uploadToS3, downloadFromS3, deleteFromS3, isS3Enabled, s3Key } = require("../services/s3Storage");
 
@@ -104,19 +104,22 @@ router.post("/upload", upload.single("file"), async (req, res) => {
       }
     }
 
-    // Create project in DB
-    const result = await dbRun(
-      `INSERT INTO projects (name, repo_url, source_path, status) VALUES (?, ?, ?, ?)`,
-      [name.trim(), null, analysisDir, "analyzing"]
-    );
-    const projectId = result.lastID;
+    // Create project in s3Store
+    const project = await s3Store.saveProject({
+      name: name.trim(),
+      repo_url: null,
+      source_path: analysisDir,
+      status: "analyzing"
+    });
+    const projectId = project.id;
 
     // Upload ZIP to S3 for persistent storage
     let s3ObjKey = null;
     if (isS3Enabled()) {
       try {
         s3ObjKey = await uploadToS3(req.file.path, projectId, name.trim());
-        await dbRun(`UPDATE projects SET s3_key = ? WHERE id = ?`, [s3ObjKey, projectId]);
+        project.s3_key = s3ObjKey;
+        await s3Store.saveProject(project);
       } catch (s3Err) {
         console.error("⚠️  S3 upload failed (continuing with local):", s3Err.message);
       }
@@ -129,23 +132,31 @@ router.post("/upload", upload.single("file"), async (req, res) => {
       repo_url: null,
       source_path: analysisDir,
       status: "analyzing",
-      created_at: new Date().toISOString(),
+      created_at: project.created_at,
     });
 
     // Clean up uploaded ZIP
     fs.unlink(req.file.path, () => { });
 
     // Run analysis in background
-    analyzeProject(analysisDir, name.trim(), projectId)
-      .then((stats) => {
+    analyzeProject(analysisDir, name.trim(), projectId, project.repo_url)
+      .then(async (stats) => {
         console.log(`✅ Analysis complete: ${stats.modules} modules from ${stats.files} files`);
-        db.run(`UPDATE projects SET status = 'ready' WHERE id = ?`, [projectId]);
+        const p = await s3Store.getProject(projectId);
+        if (p) {
+          p.status = "ready";
+          await s3Store.saveProject(p);
+        }
         // Clean up local extracted files if stored in S3
         if (s3ObjKey) fs.rm(projectDir, { recursive: true, force: true }, () => {});
       })
-      .catch((err) => {
+      .catch(async (err) => {
         console.error("❌ Analysis failed:", err.message);
-        db.run(`UPDATE projects SET status = 'error' WHERE id = ?`, [projectId]);
+        const p = await s3Store.getProject(projectId);
+        if (p) {
+          p.status = "error";
+          await s3Store.saveProject(p);
+        }
       });
 
   } catch (err) {
@@ -216,19 +227,22 @@ router.post("/github", async (req, res) => {
       }
     }
 
-    // Create project in DB
-    const result = await dbRun(
-      `INSERT INTO projects (name, repo_url, source_path, status) VALUES (?, ?, ?, ?)`,
-      [repoName, trimmedUrl, analysisDir, "analyzing"]
-    );
-    const projectId = result.lastID;
+    // Create project in s3Store
+    const project = await s3Store.saveProject({
+      name: repoName,
+      repo_url: trimmedUrl,
+      source_path: analysisDir,
+      status: "analyzing"
+    });
+    const projectId = project.id;
 
     // Upload ZIP to S3 for persistent storage
     let s3ObjKey = null;
     if (isS3Enabled()) {
       try {
         s3ObjKey = await uploadToS3(zipPath, projectId, repoName);
-        await dbRun(`UPDATE projects SET s3_key = ? WHERE id = ?`, [s3ObjKey, projectId]);
+        project.s3_key = s3ObjKey;
+        await s3Store.saveProject(project);
       } catch (s3Err) {
         console.error("⚠️  S3 upload failed (continuing with local):", s3Err.message);
       }
@@ -241,23 +255,31 @@ router.post("/github", async (req, res) => {
       repo_url: trimmedUrl,
       source_path: analysisDir,
       status: "analyzing",
-      created_at: new Date().toISOString(),
+      created_at: project.created_at,
     });
 
     // Clean up ZIP
     fs.unlink(zipPath, () => {});
 
     // Run analysis in background
-    analyzeProject(analysisDir, repoName, projectId)
-      .then((stats) => {
+    analyzeProject(analysisDir, repoName, projectId, trimmedUrl)
+      .then(async (stats) => {
         console.log(`✅ Analysis complete: ${stats.modules} modules from ${stats.files} files`);
-        db.run(`UPDATE projects SET status = 'ready' WHERE id = ?`, [projectId]);
+        const p = await s3Store.getProject(projectId);
+        if (p) {
+          p.status = "ready";
+          await s3Store.saveProject(p);
+        }
         // Clean up local extracted files if stored in S3
         if (s3ObjKey) fs.rm(projectDir, { recursive: true, force: true }, () => {});
       })
-      .catch((err) => {
+      .catch(async (err) => {
         console.error("❌ Analysis failed:", err.message);
-        db.run(`UPDATE projects SET status = 'error' WHERE id = ?`, [projectId]);
+        const p = await s3Store.getProject(projectId);
+        if (p) {
+          p.status = "error";
+          await s3Store.saveProject(p);
+        }
       });
 
   } catch (err) {
@@ -269,9 +291,9 @@ router.post("/github", async (req, res) => {
 // GET /projects/:id/status – Check analysis status
 router.get("/:id/status", async (req, res) => {
   try {
-    const row = await dbGet(`SELECT id, name, status FROM projects WHERE id = ?`, [req.params.id]);
-    if (!row) return res.status(404).json({ error: "Project not found" });
-    res.json(row);
+    const project = await s3Store.getProject(req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    res.json({ id: project.id, name: project.name, status: project.status });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -280,7 +302,7 @@ router.get("/:id/status", async (req, res) => {
 // POST /projects/:id/reanalyze – Re-run analysis on an existing project
 router.post("/:id/reanalyze", async (req, res) => {
   try {
-    const project = await dbGet(`SELECT * FROM projects WHERE id = ?`, [req.params.id]);
+    const project = await s3Store.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
     let analysisDir = project.source_path;
@@ -312,20 +334,30 @@ router.post("/:id/reanalyze", async (req, res) => {
       return res.status(400).json({ error: "Project source files not found" });
     }
 
-    db.run(`UPDATE projects SET status = 'analyzing' WHERE id = ?`, [project.id]);
+    project.status = "analyzing";
+    await s3Store.saveProject(project);
+
     res.json({ id: project.id, name: project.name, status: "analyzing" });
 
     // Re-run analysis in background
-    analyzeProject(analysisDir, project.name, project.id)
-      .then((stats) => {
+    analyzeProject(analysisDir, project.name, project.id, project.repo_url)
+      .then(async (stats) => {
         console.log(`✅ Re-analysis complete: ${stats.modules} modules from ${stats.files} files`);
-        db.run(`UPDATE projects SET status = 'ready' WHERE id = ?`, [project.id]);
+        const p = await s3Store.getProject(project.id);
+        if (p) {
+          p.status = "ready";
+          await s3Store.saveProject(p);
+        }
         // Clean up temp dir if we restored from S3
         if (tempDir) fs.rm(tempDir, { recursive: true, force: true }, () => {});
       })
-      .catch((err) => {
+      .catch(async (err) => {
         console.error("❌ Re-analysis failed:", err.message);
-        db.run(`UPDATE projects SET status = 'error' WHERE id = ?`, [project.id]);
+        const p = await s3Store.getProject(project.id);
+        if (p) {
+          p.status = "error";
+          await s3Store.saveProject(p);
+        }
         if (tempDir) fs.rm(tempDir, { recursive: true, force: true }, () => {});
       });
   } catch (err) {
@@ -337,41 +369,20 @@ router.post("/:id/reanalyze", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   const projectId = req.params.id;
   try {
-    const project = await dbGet(`SELECT * FROM projects WHERE id = ?`, [projectId]);
+    const project = await s3Store.getProject(projectId);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
     const repoName = project.name;
 
-    // Delete intelligence data linked by repository name
-    await dbRun(`DELETE FROM modules WHERE repository = ?`, [repoName]);
-    await dbRun(`DELETE FROM vulnerabilities WHERE repository = ?`, [repoName]);
-    await dbRun(`DELETE FROM dependencies WHERE repository = ?`, [repoName]);
-    await dbRun(`DELETE FROM time_periods WHERE repository = ?`, [repoName]);
-    await dbRun(`DELETE FROM architecture_nodes WHERE repository = ?`, [repoName]);
-    await dbRun(`DELETE FROM architecture_edges WHERE repository = ?`, [repoName]);
-
-    // Delete chat history and impact analysis linked by project_id
-    await dbRun(`DELETE FROM chat_history WHERE project_id = ?`, [projectId]);
-    await dbRun(`DELETE FROM impact_analysis WHERE project_id = ?`, [projectId]);
-
-    // Delete the project itself
-    await dbRun(`DELETE FROM projects WHERE id = ?`, [projectId]);
+    // Delete project and S3 contents via s3Store
+    await s3Store.deleteProject(projectId);
 
     // Clean up extracted files on disk
     if (project.source_path && fs.existsSync(project.source_path)) {
       fs.rm(project.source_path, { recursive: true, force: true }, () => { });
     }
 
-    // Delete from S3
-    if (project.s3_key && isS3Enabled()) {
-      try {
-        await deleteFromS3(project.s3_key);
-      } catch (s3Err) {
-        console.error("⚠️  S3 delete failed:", s3Err.message);
-      }
-    }
-
-    console.log(`\u{1F5D1}\uFE0F  Deleted project: ${repoName} (id=${projectId})`);
+    console.log(`🗑️  Deleted project: ${repoName} (id=${projectId})`);
     res.json({ success: true, id: Number(projectId), name: repoName });
   } catch (err) {
     console.error("Delete project error:", err);
@@ -380,14 +391,14 @@ router.delete("/:id", async (req, res) => {
 });
 
 // GET /projects – List all projects
-router.get("/", (req, res) => {
-  const sql = `SELECT * FROM projects ORDER BY created_at DESC`;
-  db.all(sql, [], (err, rows) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
-    res.json(rows);
-  });
+router.get("/", async (req, res) => {
+  try {
+    const projects = await s3Store.getProjects();
+    projects.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    res.json(projects);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
